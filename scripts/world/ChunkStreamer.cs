@@ -282,7 +282,8 @@ public partial class ChunkStreamer : Node3D
         if (geo.Lamps != null) node.AddChild(MakeMultiMesh(_lampMesh!, geo.Lamps.ToArray(), geo.Lamps.Count / 16, false));
         if (geo.Poles != null) node.AddChild(MakeMultiMesh(_poleMesh!, geo.Poles.ToArray(), geo.Poles.Count / 16, false));
         if (geo.Pylons != null) node.AddChild(MakeMultiMesh(_pylonMesh!, geo.Pylons.ToArray(), geo.Pylons.Count / 16, true));
-        AddFaces(node, geo.PavedFaces, "asphalt", true);
+        // One-sided: the ground side of a road sheet must never grab a body that dipped under its edge.
+        AddFaces(node, geo.PavedFaces, "asphalt", false);
         AddFaces(node, geo.LooseFaces, "ground", false);
         AddFaces(node, geo.BuildingFaces, "hard", true);
     }

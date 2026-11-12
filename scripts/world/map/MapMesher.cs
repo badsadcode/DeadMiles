@@ -219,18 +219,20 @@ public static class MapMesher
             }
         }
         for (int i = 0; i < 3; i++)
-            mesh.Quad(first + i, first + i + 1, first + 4 + i + 1, first + 4 + i, Vector3.Up, i == 1 || bridge ? collision : null);
+            // The sloping shoulders are solid too: they run down into the ground, so there is no
+            // lip along the road edge for someone on foot to catch on.
+            mesh.Quad(first + i, first + i + 1, first + 4 + i + 1, first + 4 + i, Vector3.Up, collision);
 
         if (!road.IsRail)
         {
-            if (k == 0 && (road.Flags & RoadFlag.StartCap) != 0) AddCap(mesh, p0, -d, y0, hw, road.Along[0], col, collision);
-            if (k == road.X.Length - 2 && (road.Flags & RoadFlag.EndCap) != 0) AddCap(mesh, p1, d, y1, hw, road.Along[k + 1], col, collision);
+            if (k == 0 && (road.Flags & RoadFlag.StartCap) != 0) AddCap(mesh, p0, -d, y0, hw, road.Along[0], col, collision, !bridge);
+            if (k == road.X.Length - 2 && (road.Flags & RoadFlag.EndCap) != 0) AddCap(mesh, p1, d, y1, hw, road.Along[k + 1], col, collision, !bridge);
         }
         if (bridge) AddBridgeSides(mesh, geo.PavedFaces, p0, p1, m0, m1, y0, y1, hw);
     }
 
     /// <summary>Rounds off the end of a road so junctions and dead ends have no notches.</summary>
-    private static void AddCap(MeshData mesh, Vector2 p, Vector2 outward, float y, float hw, float along, Color col, List<Vector3>? collision)
+    private static void AddCap(MeshData mesh, Vector2 p, Vector2 outward, float y, float hw, float along, Color col, List<Vector3>? collision, bool withSkirt)
     {
         var side = new Vector2(-outward.Y, outward.X);
         int centre = mesh.Add(new Vector3(p.X, y, p.Y), Vector3.Up, new Vector2(0, along), Vector2.Zero, col);
@@ -244,6 +246,22 @@ public static class MapMesher
             int v = mesh.Add(new Vector3(q.X, y, q.Y), Vector3.Up, new Vector2(c * hw * 0.98f, along + sn * hw), Vector2.Zero, col);
             if (prev >= 0) mesh.Tri(centre, prev, v, Vector3.Up, collision);
             prev = v;
+        }
+        if (!withSkirt) return;
+        // a skirt sloping into the ground around the rounded end, like the shoulders along the sides
+        int prevIn = -1, prevOut = -1;
+        float skirt = hw + ShoulderWidth;
+        for (int i = 0; i <= steps; i++)
+        {
+            float a = Mathf.Pi * i / steps;
+            float c = MathF.Cos(a), sn = MathF.Sin(a);
+            var radial = side * c + outward * sn;
+            var n = (Vector3.Up + new Vector3(radial.X, 0, radial.Y) * 0.28f).Normalized();
+            var qi = p + radial * hw; var qo = p + radial * skirt;
+            int vi = mesh.Add(new Vector3(qi.X, y, qi.Y), n, new Vector2(c * hw, along + sn * hw), Vector2.Zero, col);
+            int vo = mesh.Add(new Vector3(qo.X, y - ShoulderDrop, qo.Y), n, new Vector2(c * skirt, along + sn * skirt), Vector2.Zero, col);
+            if (prevIn >= 0) mesh.Quad(prevIn, prevOut, vo, vi, Vector3.Up, collision);
+            prevIn = vi; prevOut = vo;
         }
     }
 

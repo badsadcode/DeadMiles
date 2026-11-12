@@ -132,6 +132,7 @@ public partial class DebugHarness : Node
                     case "mapscreen": await TestMapScreen(); break;
                     case "mapexit": await TestMapExit(); break;
                     case "maprecover": await TestMapRecover(); break;
+                    case "mapwalk": await TestMapWalk(); break;
                     default: Report($"ERROR: unknown test '{test}'"); break;
                 }
             }
@@ -339,6 +340,68 @@ public partial class DebugHarness : Node
         float edge2 = map.RoadEdgeDistance(q1.X, q1.Z, 60f);
         Report($"upright in a field (road edge {map.RoadEdgeDistance(q0.X, q0.Z, 60f):0.0}) -> one press: moved {q1.DistanceTo(q0):0.0} m, road edge {edge2:0.0}");
         if (edge2 > 0.5f) Report("ERROR: one press did not tow an upright car to the road");
+    }
+
+    /// <summary>
+    /// Walks across roads on foot, square-on and at a shallow angle, from both sides, and checks
+    /// the player keeps moving: nothing along a road edge may trap someone on foot.
+    /// </summary>
+    private async Task TestMapWalk()
+    {
+        await EnsureGame();
+        var g = GameWorld.I;
+        var map = g.World.Map;
+        if (map == null) { Report("ERROR: mapwalk needs --map"); return; }
+        await Wait(2);
+        var origin = g.Player.GlobalPosition;
+        int stuck = 0, runs = 0;
+        foreach (var (ox, oz) in new[] { (0f, 0f), (60f, 20f), (-70f, -30f), (140f, 60f) })
+        {
+            if (!map.NearestRoad(origin.X + ox, origin.Z + oz, 150f, 0f, out var road, out float yaw)) continue;
+            var along = new Vector3(-MathF.Sin(yaw), 0, -MathF.Cos(yaw));
+            var across = new Vector3(along.Z, 0, -along.X);
+            foreach (float slant in new[] { 0f, 1.6f })           // square-on, then about 30 degrees to the road
+            {
+                foreach (float sideSign in new[] { 1f, -1f })
+                {
+                    var dir = (across * -sideSign + along * slant).Normalized();
+                    var from = road + across * (11f * sideSign) - along * (slant * 11f);
+                    if (map.InBuilding(from.X, from.Z, 1f)) continue;
+                    from.Y = g.World.Height(from.X, from.Z) + 0.3f;
+                    g.Player.SetPhysicsProcess(false);
+                    g.Player.GlobalPosition = from;
+                    g.Player.Velocity = Vector3.Zero;
+                    g.Player.SetLook(MathF.Atan2(-dir.X, -dir.Z), 0f);
+                    double t = 0;
+                    while (!g.Streamer.IsSolidAt(from) && t < 30) { await Wait(0.1); t += 0.1; }
+                    g.Player.SetPhysicsProcess(true);
+                    await Wait(0.6);
+                    var a = g.Player.GlobalPosition;
+                    Input.ActionPress("move_forward");
+                    float minStep = float.MaxValue;
+                    var prev = a;
+                    for (int i = 0; i < 8; i++)
+                    {
+                        await Wait(0.5);
+                        var now = g.Player.GlobalPosition;
+                        minStep = MathF.Min(minStep, new Vector2(now.X - prev.X, now.Z - prev.Z).Length());
+                        prev = now;
+                    }
+                    Input.ActionRelease("move_forward");
+                    await Wait(0.3);
+                    var b = g.Player.GlobalPosition;
+                    float walked = new Vector2(b.X - a.X, b.Z - a.Z).Length();
+                    runs++;
+                    bool bad = minStep < 0.6f;
+                    if (bad) stuck++;
+                    Report($"walk across at ({road.X:0},{road.Z:0}) slant {slant:0.0} side {sideSign:+0;-0}: {walked:0.0} m in 4 s, slowest half-second {minStep:0.00} m, end y-ground {b.Y - g.World.Height(b.X, b.Z):0.00}{(bad ? "  <-- STUCK" : "")}");
+                }
+            }
+        }
+        Report($"walk test: {stuck} stuck out of {runs} crossings");
+        if (stuck > 0) Report("ERROR: the player got stuck crossing a road");
+        var car = g.Vehicle.GlobalPosition;
+        Report($"car rests {car.Y - g.World.Height(car.X, car.Z):0.00} m above road level (should be about 0.0 to 0.1)");
     }
 
     private async Task TestMapScreen()
