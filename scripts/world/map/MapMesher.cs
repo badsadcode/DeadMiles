@@ -504,7 +504,9 @@ public static class MapMesher
         Palette(b.Type, seed, out var wall, out var roofCol, out float wallKind);
         if (b.Height < 3.4f || b.IsPart && b.Height - b.MinHeight < 3f) wallKind = KindPlain;
         float floor = gMax;
-        float bottom = b.MinHeight > 0.05f ? floor + b.MinHeight : gMin - 0.6f;
+        // Only pieces of a multi-part building may start above the ground (an upper storey, a
+        // spire). A whole outline tagged with a minimum height is almost always a mapping slip.
+        float bottom = b.IsPart && b.MinHeight > 0.05f ? floor + b.MinHeight : gMin - 0.6f;
         float top = floor + b.Height;
         bool pitched = b.Roof >= RoofKind.Gabled && b.RoofHeight > 0.2f;
         float eave = pitched ? top - b.RoofHeight : top;
@@ -515,7 +517,7 @@ public static class MapMesher
         if (eave - bottom > 0.05f)
         {
             float wallH = eave - floor;
-            int front = wallKind == KindWindows && b.MinHeight < 0.05f ? FrontWall(b) : -1;
+            int front = wallKind == KindWindows && !(b.IsPart && b.MinHeight > 0.05f) ? FrontWall(b) : -1;
             for (int q = 0; q < b.RX.Length; q++)
             {
                 var rx = b.RX[q]; var rz = b.RZ[q];

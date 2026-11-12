@@ -24,6 +24,10 @@ public partial class MapScreen : Control
     private readonly HashSet<long> _pending = new();
     private readonly ConcurrentQueue<(long key, byte[] rgb)> _done = new();
     private Font _font = null!;
+    private Vector2 _pan;                 // world metres the view is shifted from the player
+    private Vector2 _mouse;               // cursor position on screen
+    private bool _dragging, _dragged;
+    private Vector2 _pressAt;
 
     public void Setup(GameWorld g, MapWorld map)
     {
@@ -31,7 +35,7 @@ public partial class MapScreen : Control
         Theme = Ui.Theme;
         ProcessMode = ProcessModeEnum.Always;
         SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
-        MouseFilter = MouseFilterEnum.Ignore;
+        MouseFilter = MouseFilterEnum.Stop;   // the map takes the mouse while it is open
         Visible = false;
         _font = ThemeDB.FallbackFont;
     }
@@ -42,20 +46,111 @@ public partial class MapScreen : Control
     public void Toggle()
     {
         Visible = !Visible;
-        if (Visible) { _g.Audio.Play("open", -8f); QueueRedraw(); }
+        if (Visible)
+        {
+            _g.Audio.Play("open", -8f);
+            _pan = Vector2.Zero;
+            _mouse = Size * 0.5f;
+            Input.MouseMode = Input.MouseModeEnum.Visible;
+            QueueRedraw();
+        }
+        else Close();
+    }
+
+    private void Close()
+    {
+        Visible = false;
+        _dragging = false;
+        if (!_g.UiOpen) Input.MouseMode = Input.MouseModeEnum.Captured;
+    }
+
+    private Vector2 FocusXZ()
+    {
+        var f = _g.Player.InVehicle ? _g.Vehicle.GlobalPosition : _g.Player.GlobalPosition;
+        return new Vector2(f.X, f.Z) + _pan;
+    }
+
+    /// <summary>World position under a screen point.</summary>
+    private Vector2 ToWorld(Vector2 screen) => FocusXZ() + (screen - Size * 0.5f) * Zooms[_zoom];
+
+    private void Zoom(int step)
+    {
+        // keep the spot under the cursor still while zooming
+        var before = ToWorld(_mouse);
+        _zoom = Math.Clamp(_zoom + step, 0, Zooms.Length - 1);
+        _pan += before - ToWorld(_mouse);
+        QueueRedraw();
+    }
+
+    private int MarkerAt(Vector2 screen)
+    {
+        var w = ToWorld(screen);
+        float reach = 12f * Zooms[_zoom];
+        for (int i = 0; i < _g.State.Markers.Count; i++)
+        {
+            var m = _g.State.Markers[i];
+            if (m.Length == 2 && new Vector2(m[0], m[1]).DistanceTo(w) < reach) return i;
+        }
+        return -1;
+    }
+
+    public override void _GuiInput(InputEvent e)
+    {
+        if (e is InputEventMouseMotion motion)
+        {
+            _mouse = motion.Position;
+            if (_dragging)
+            {
+                if (motion.Position.DistanceTo(_pressAt) > 5f) _dragged = true;
+                if (_dragged) _pan -= motion.Relative * Zooms[_zoom];
+            }
+            QueueRedraw();
+        }
+        else if (e is InputEventMouseButton mb)
+        {
+            _mouse = mb.Position;
+            if (mb.ButtonIndex == MouseButton.WheelUp && mb.Pressed) Zoom(-1);
+            else if (mb.ButtonIndex == MouseButton.WheelDown && mb.Pressed) Zoom(1);
+            else if (mb.ButtonIndex == MouseButton.Left)
+            {
+                if (mb.Pressed) { _dragging = true; _dragged = false; _pressAt = mb.Position; }
+                else
+                {
+                    // a click (not a drag) sets the GPS destination
+                    if (_dragging && !_dragged) { _g.SetDestination(ToWorld(mb.Position)); _g.Audio.Play("click", -6f); }
+                    _dragging = false;
+                }
+            }
+            else if (mb.ButtonIndex == MouseButton.Right && mb.Pressed)
+            {
+                int hit = MarkerAt(mb.Position);
+                if (hit >= 0) _g.State.Markers.RemoveAt(hit);
+                else { var w = ToWorld(mb.Position); _g.State.Markers.Add(new[] { w.X, w.Y }); }
+                _g.Audio.Play("click", -6f);
+            }
+            QueueRedraw();
+        }
+        AcceptEvent();
     }
 
     public override void _UnhandledInput(InputEvent e)
     {
         if (!Visible) return;
-        if (e.IsActionPressed("pause")) { Visible = false; GetViewport().SetInputAsHandled(); return; }
-        int step = 0;
-        if (e is InputEventMouseButton { Pressed: true } mb)
-            step = mb.ButtonIndex == MouseButton.WheelUp ? -1 : mb.ButtonIndex == MouseButton.WheelDown ? 1 : 0;
-        else if (e is InputEventKey { Pressed: true } key)
-            step = key.Keycode is Key.Equal or Key.Plus or Key.KpAdd ? -1 : key.Keycode is Key.Minus or Key.KpSubtract ? 1 : 0;
-        if (step == 0) return;
-        _zoom = Math.Clamp(_zoom + step, 0, Zooms.Length - 1);
+        if (e.IsActionPressed("pause")) { Close(); GetViewport().SetInputAsHandled(); return; }
+        if (e is not InputEventKey { Pressed: true, Echo: false } key) return;
+        switch (key.Keycode)
+        {
+            case Key.Equal or Key.Plus or Key.KpAdd: Zoom(-1); break;
+            case Key.Minus or Key.KpSubtract: Zoom(1); break;
+            case Key.Space or Key.Home: _pan = Vector2.Zero; break;                      // back to where you are
+            case Key.Delete or Key.Backspace: _g.SetDestination(null); break;            // cancel the route
+            case Key.T:                                                                   // test-phase fast travel
+                var w = ToWorld(_mouse);
+                Close();
+                _g.TeleportTo(w.X, w.Y);
+                break;
+            default: return;
+        }
         QueueRedraw();
         GetViewport().SetInputAsHandled();
     }
@@ -81,7 +176,8 @@ public partial class MapScreen : Control
     {
         var size = Size;
         float mpp = Zooms[_zoom];
-        var focus = _g.Player.InVehicle ? _g.Vehicle.GlobalPosition : _g.Player.GlobalPosition;
+        var here = _g.Player.InVehicle ? _g.Vehicle.GlobalPosition : _g.Player.GlobalPosition;
+        var focus = new Vector3(here.X + _pan.X, 0, here.Z + _pan.Y);
         DrawRect(new Rect2(Vector2.Zero, size), new Color(0.05f, 0.055f, 0.06f, 0.97f));
 
         Vector2 ToScreen(double wx, double wz) => new((float)((wx - focus.X) / mpp) + size.X * 0.5f, (float)((wz - focus.Z) / mpp) + size.Y * 0.5f);
@@ -139,6 +235,18 @@ public partial class MapScreen : Control
             }
         }
 
+        // the GPS route, under the names and pins
+        var route = _g.Route;
+        if (route != null && route.Points.Length > 1)
+        {
+            int stride = Math.Max(1, (int)(mpp / 2.5f));
+            var line = new List<Vector2>(route.Points.Length / stride + 2);
+            for (int i = 0; i < route.Points.Length; i += stride) line.Add(ToScreen(route.Points[i].X, route.Points[i].Y));
+            line.Add(ToScreen(route.Points[^1].X, route.Points[^1].Y));
+            DrawPolyline(line.ToArray(), new Color(0, 0, 0, 0.75f), 7f, true);
+            DrawPolyline(line.ToArray(), new Color(0.35f, 0.75f, 1f), 4f, true);
+        }
+
         // names
         foreach (var p in _map.Data.Places)
         {
@@ -152,12 +260,30 @@ public partial class MapScreen : Control
             DrawString(_font, at, p.Name, HorizontalAlignment.Left, -1, fs, p.Rank == 2 ? new Color(0.85f, 0.83f, 0.76f) : Ui.Paper);
         }
 
+        // pins dropped by the player
+        foreach (var m in _g.State.Markers)
+        {
+            if (m.Length != 2) continue;
+            var s = ToScreen(m[0], m[1]);
+            DrawColoredPolygon(new[] { s + new Vector2(0, -11), s + new Vector2(9, 0), s + new Vector2(0, 11), s + new Vector2(-9, 0) }, new Color(0, 0, 0, 0.85f));
+            DrawColoredPolygon(new[] { s + new Vector2(0, -8), s + new Vector2(6.5f, 0), s + new Vector2(0, 8), s + new Vector2(-6.5f, 0) }, new Color(0.3f, 0.9f, 0.85f));
+        }
+        // destination flag
+        if (_g.Destination is { } dest)
+        {
+            var s = ToScreen(dest.X, dest.Y);
+            DrawLine(s, s + new Vector2(0, -22), new Color(0, 0, 0, 0.9f), 4f);
+            DrawLine(s, s + new Vector2(0, -22), Ui.Paper, 2f);
+            DrawColoredPolygon(new[] { s + new Vector2(1, -22), s + new Vector2(17, -17), s + new Vector2(1, -11) }, new Color(0.9f, 0.25f, 0.2f));
+            DrawCircle(s, 3.5f, Ui.Paper);
+        }
+
         // you are here: an arrow pointing where you face
         var fwd = _g.Player.InVehicle ? -_g.Vehicle.GlobalTransform.Basis.Z : -_g.Player.GlobalTransform.Basis.Z;
         var dir = new Vector2(fwd.X, fwd.Z);
         dir = dir.LengthSquared() > 1e-4f ? dir.Normalized() : new Vector2(0, -1);
         var perp = new Vector2(-dir.Y, dir.X);
-        var c0 = size * 0.5f;
+        var c0 = ToScreen(here.X, here.Z);
         DrawColoredPolygon(new[] { c0 + dir * 15, c0 - dir * 10 + perp * 9, c0 - dir * 4, c0 - dir * 10 - perp * 9 }, new Color(0, 0, 0, 0.9f));
         DrawColoredPolygon(new[] { c0 + dir * 12, c0 - dir * 8 + perp * 7, c0 - dir * 3, c0 - dir * 8 - perp * 7 }, Ui.Accent);
 
@@ -171,10 +297,37 @@ public partial class MapScreen : Control
         DrawString(_font, b0 + new Vector2(0, -9), barM >= 1000 ? $"{barM / 1000:0} km" : $"{barM:0} m", HorizontalAlignment.Left, -1, 14, Ui.Paper);
         DrawString(_font, new Vector2(size.X - 44, 44), "N", HorizontalAlignment.Left, -1, 22, Ui.Paper);
         DrawLine(new Vector2(size.X - 36, 52), new Vector2(size.X - 36, 78), Ui.Paper, 2f);
-        string help = $"[{InputSetup.KeyName("map")}] close    mouse wheel or +/- zoom    orange squares: fuel";
-        var hs = _font.GetStringSize(help, HorizontalAlignment.Left, -1, 14);
-        DrawRect(new Rect2(size.X - hs.X - 40, size.Y - 46, hs.X + 20, 28), new Color(0, 0, 0, 0.6f));
-        DrawString(_font, new Vector2(size.X - hs.X - 30, size.Y - 26), help, HorizontalAlignment.Left, -1, 14, Ui.Dim);
+        // cursor: crosshair, with how far that spot is from you
+        var cw = ToWorld(_mouse);
+        DrawLine(_mouse - new Vector2(13, 0), _mouse - new Vector2(4, 0), Ui.Paper, 2f);
+        DrawLine(_mouse + new Vector2(4, 0), _mouse + new Vector2(13, 0), Ui.Paper, 2f);
+        DrawLine(_mouse - new Vector2(0, 13), _mouse - new Vector2(0, 4), Ui.Paper, 2f);
+        DrawLine(_mouse + new Vector2(0, 4), _mouse + new Vector2(0, 13), Ui.Paper, 2f);
+        float away = cw.DistanceTo(new Vector2(here.X, here.Z));
+        string tip = away >= 1000f ? $"{away / 1000f:0.0} km" : $"{away:0} m";
+        DrawString(_font, _mouse + new Vector2(17, -7) + Vector2.One, tip, HorizontalAlignment.Left, -1, 14, new Color(0, 0, 0, 0.85f));
+        DrawString(_font, _mouse + new Vector2(17, -7), tip, HorizontalAlignment.Left, -1, 14, Ui.Paper);
+
+        string status = _g.Routing ? "Calculating route..."
+            : route != null ? $"Route: {_g.NavRemaining / 1000f:0.0} km to go"
+            : _g.Destination != null ? "No route to the flag" : "";
+        if (status.Length > 0)
+        {
+            var ss = _font.GetStringSize(status, HorizontalAlignment.Left, -1, 17);
+            DrawRect(new Rect2(size.X * 0.5f - ss.X * 0.5f - 12, 14, ss.X + 24, 30), new Color(0, 0, 0, 0.65f));
+            DrawString(_font, new Vector2(size.X * 0.5f - ss.X * 0.5f, 36), status, HorizontalAlignment.Left, -1, 17, Ui.Paper);
+        }
+
+        string[] help =
+        {
+            $"[{InputSetup.KeyName("map")}] close    wheel or +/- zoom    drag to move    [Space] back to you",
+            "click: GPS destination    [Del] cancel route    right-click: pin on / off    [T] travel to cursor (testing)",
+        };
+        float hw = 0;
+        foreach (var h in help) hw = MathF.Max(hw, _font.GetStringSize(h, HorizontalAlignment.Left, -1, 13).X);
+        DrawRect(new Rect2(size.X - hw - 34, size.Y - 62, hw + 20, 46), new Color(0, 0, 0, 0.65f));
+        for (int i = 0; i < help.Length; i++)
+            DrawString(_font, new Vector2(size.X - hw - 24, size.Y - 43 + i * 19), help[i], HorizontalAlignment.Left, -1, 13, Ui.Dim);
     }
 
     private void Evict(int tx0, int tx1, int tz0, int tz1)

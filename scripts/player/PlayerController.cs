@@ -412,9 +412,16 @@ public partial class PlayerController : CharacterBody3D, IDamageable
         if (Vehicle == null) return;
         var v = Vehicle;
         var basis = v.GlobalTransform.Basis.Orthonormalized();
-        var candidates = new[] { new Vector3(-1.75f, 0.2f, -0.1f), new Vector3(1.75f, 0.2f, -0.1f), new Vector3(0, 0.2f, 3.4f), new Vector3(0, 1.9f, 0) };
+        // driver's side first, then further out, the other side, behind and in front
+        var candidates = new[]
+        {
+            new Vector3(-1.75f, 0.2f, -0.1f), new Vector3(-2.5f, 0.2f, -0.1f), new Vector3(1.75f, 0.2f, -0.1f), new Vector3(2.5f, 0.2f, -0.1f),
+            new Vector3(0, 0.2f, 3.4f), new Vector3(0, 0.2f, -3.6f), new Vector3(-2.2f, 0.2f, 2.6f), new Vector3(2.2f, 0.2f, 2.6f),
+            new Vector3(-3.4f, 0.2f, -0.1f), new Vector3(3.4f, 0.2f, -0.1f),
+        };
         var space = GetWorld3D().DirectSpaceState;
-        var pos = v.GlobalPosition + Vector3.Up * 2f;
+        // nothing free: still stand beside the car rather than inside or on top of it
+        var pos = v.GlobalPosition + basis * new Vector3(-2.1f, 0.4f, -0.1f);
         foreach (var c in candidates)
         {
             var p = v.GlobalPosition + basis * c;
@@ -431,6 +438,17 @@ public partial class PlayerController : CharacterBody3D, IDamageable
         Vehicle = null;
         v.OnExit();
         GlobalPosition = pos;
+        Velocity = Vector3.Zero;
+        // For the first moments the car cannot shove the player (or be shoved): if the spot was a
+        // tight fit, the two bodies ease apart instead of being flung.
+        AddCollisionExceptionWith(v);
+        v.AddCollisionExceptionWith(this);
+        GetTree().CreateTimer(1.2, false).Timeout += () =>
+        {
+            if (!IsInstanceValid(v) || !IsInsideTree() || Vehicle == v) return;
+            RemoveCollisionExceptionWith(v);
+            v.RemoveCollisionExceptionWith(this);
+        };
         var fwd = -basis.Z;
         Yaw = MathF.Atan2(-fwd.X, -fwd.Z);
         _pitch = 0;

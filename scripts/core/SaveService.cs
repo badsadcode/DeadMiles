@@ -17,6 +17,10 @@ public sealed class SaveData
     public string Map { get; set; } = "";
     /// <summary>Where a new game on a real map starts (world X, Z).</summary>
     public float[] MapStart { get; set; } = { 0, 0 };
+    /// <summary>Pins the player dropped on the map (world X, Z each).</summary>
+    public List<float[]> Markers { get; set; } = new();
+    /// <summary>Where the GPS is heading (world X, Z), or null.</summary>
+    public float[]? Destination { get; set; }
     public double PlayTime { get; set; }
     public int Day { get; set; } = 1;
     public float TimeOfDay { get; set; } = 8.5f;

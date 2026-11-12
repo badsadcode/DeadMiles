@@ -20,6 +20,7 @@ public partial class DebugHarness : Node
     private string _map = "";
     private string _place = "";
     private string _views = "";
+    private Vector2? _dest;
     private float _startX, _startZ;
 
     public static DebugHarness? TryCreate()
@@ -39,6 +40,13 @@ public partial class DebugHarness : Node
         {
             if (arg.StartsWith("--map=")) h._map = arg["--map=".Length..];
             else if (arg.StartsWith("--views=")) h._views = arg["--views=".Length..];
+            else if (arg.StartsWith("--dest="))
+            {
+                var d = arg["--dest=".Length..].Split(',');
+                var inv = System.Globalization.CultureInfo.InvariantCulture;
+                if (d.Length == 2 && float.TryParse(d[0], System.Globalization.NumberStyles.Float, inv, out float dx) && float.TryParse(d[1], System.Globalization.NumberStyles.Float, inv, out float dz))
+                    h._dest = new Vector2(dx, dz);
+            }
             else if (arg.StartsWith("--place=")) h._place = arg["--place=".Length..];
             else if (arg.StartsWith("--start="))
             {
@@ -122,6 +130,7 @@ public partial class DebugHarness : Node
                     case "mapdrive": await TestMapDrive(); break;
                     case "mapviews": await TestMapViews(); break;
                     case "mapscreen": await TestMapScreen(); break;
+                    case "mapexit": await TestMapExit(); break;
                     default: Report($"ERROR: unknown test '{test}'"); break;
                 }
             }
@@ -230,6 +239,61 @@ public partial class DebugHarness : Node
         Report($"chunk builds: {st.BuildCount}, average {st.TotalBuildMs / Math.Max(1, st.BuildCount):0.0} ms, slowest {st.SlowestBuildMs:0.0} ms (worker threads)");
     }
 
+    /// <summary>Gets in and out of the car a few times and checks the player lands beside it, on the ground.</summary>
+    private async Task TestMapExit()
+    {
+        await EnsureGame();
+        var g = GameWorld.I;
+        await Wait(2);
+        for (int i = 0; i < 3; i++)
+        {
+            g.Player.EnterVehicle(g.Vehicle);
+            await Wait(1.5);
+            g.Player.ExitVehicle();
+            var local = g.Vehicle.GlobalTransform.AffineInverse() * g.Player.GlobalPosition;
+            await Wait(2.5);
+            var after = g.Player.GlobalPosition;
+            float ground = g.World.Height(after.X, after.Z);
+            Report($"exit {i}: beside car at local {local}, after 2.5 s y={after.Y:0.00} ground={ground:0.00}, car up={g.Vehicle.GlobalTransform.Basis.Y.Y:0.00} car y={g.Vehicle.GlobalPosition.Y:0.00}");
+            if (MathF.Abs(local.X) < 1.2f && local.Z < 2.5f) Report("ERROR: the player came out inside or on top of the car");
+            if (MathF.Abs(after.Y - ground) > 1.5f) Report("ERROR: the player is not standing on the ground after getting out");
+        }
+        // and again after a short drive, stopping in the lane
+        var map = g.World.Map;
+        if (map == null) return;
+        for (int leg = 0; leg < 3; leg++)
+        {
+            g.Player.EnterVehicle(g.Vehicle);
+            g.Vehicle.Fuel = 40;
+            g.Vehicle.ForceEngine(true);
+            bool stop = false;
+            g.Autopilot = (VehicleController v, ref float throttle, ref float brake, ref float steer) =>
+            {
+                var fwd = -v.GlobalTransform.Basis.Z;
+                var probe = v.GlobalPosition + fwd * (8f + MathF.Abs(v.Speed) * 0.6f);
+                float angle = 0f;
+                if (map.NearestRoad(probe.X, probe.Z, 40f, 1.2f, out var target, out _))
+                {
+                    var l = v.GlobalTransform.AffineInverse() * target;
+                    angle = MathF.Atan2(l.X, -l.Z);
+                }
+                steer = Mathf.Clamp(-angle * 2.0f, -1f, 1f);
+                throttle = !stop && v.Speed < 8f ? 0.7f : 0f;
+                brake = stop ? 1f : 0f;
+            };
+            await Wait(5);
+            stop = true;
+            await Wait(3);
+            g.Autopilot = null;
+            g.Player.ExitVehicle();
+            var local = g.Vehicle.GlobalTransform.AffineInverse() * g.Player.GlobalPosition;
+            await Wait(2.5);
+            var after = g.Player.GlobalPosition;
+            Report($"drive leg {leg}: car speed {g.Vehicle.Speed:0.0}, road edge {map.RoadEdgeDistance(after.X, after.Z):0.0}, player out at local {local}, after 2.5 s y={after.Y:0.00} ground={g.World.Height(after.X, after.Z):0.00}");
+            if (MathF.Abs(local.X) < 1.2f && local.Z < 2.5f) Report("ERROR: the player came out inside or on top of the car");
+        }
+    }
+
     private async Task TestMapScreen()
     {
         await EnsureGame();
@@ -242,8 +306,32 @@ public partial class DebugHarness : Node
             await Wait(zoom == 3 ? 14 : 6);
             await Shot($"map_screen_zoom{zoom}");
         }
+        // GPS: route to a town centre a few kilometres away, then fast-travel part of the way
+        var here = g.Player.GlobalPosition;
+        var target = _dest ?? new Vector2(here.X + 5200f, here.Z + 1500f);
+        g.SetDestination(target);
+        double waited = 0;
+        while (g.Routing && waited < 180) { await Wait(0.25); waited += 0.25; }
+        Report(g.Route != null ? $"route found in {waited:0.0} s: {g.Route.Length / 1000f:0.0} km, {g.Route.Points.Length} points" : "ERROR: no route found");
+        g.State.Markers.Add(new[] { here.X + 900f, here.Z - 600f });
+        g.MapView.SetZoom(2);
+        await Wait(8);
+        await Shot("map_screen_route");
         g.MapView.Toggle();
         Report($"map screen closed, visible={g.MapView.Visible}");
+        await Wait(1.5);
+        await Shot("gps_hud");
+        if (g.Route != null)
+        {
+            var mid = g.Route.Points[g.Route.Points.Length / 2];
+            g.TeleportTo(mid.X, mid.Y);
+            double t = 0;
+            while (!g.Streamer.IsSolidAt(g.Player.GlobalPosition) && t < 40) { await Wait(0.25); t += 0.25; }
+            await Wait(4);
+            var p = g.Player.GlobalPosition;
+            Report($"after travel: player ({p.X:0},{p.Z:0}) y={p.Y:0.00} ground={g.World.Height(p.X, p.Z):0.00}, {g.NavRemaining / 1000f:0.0} km to go, next turn {g.NavTurn} in {g.NavTurnDistance:0} m");
+            await Shot("gps_after_travel");
+        }
     }
 
     private async Task TestMapDrive()

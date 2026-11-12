@@ -82,6 +82,9 @@ public partial class GameWorld : Node3D
             MapView = new MapScreen { Name = "Map" };
             layer.AddChild(MapView);
             MapView.Setup(this, World.Map);
+            var gps = new GpsHud { Name = "Gps", Visible = false };
+            layer.AddChild(gps);
+            gps.Setup(this);
         }
         Pause = new PauseMenu { Name = "Pause" };
         layer.AddChild(Pause);
@@ -92,6 +95,7 @@ public partial class GameWorld : Node3D
         Encounters.Setup(this);
 
         if (IsNewGame) PlaceNewGame(); else Restore();
+        if (World.Map != null && State.Destination is { Length: 2 } dest) Destination = new Vector2(dest[0], dest[1]);
 
         Streamer.Focus = Player;
         ApplySettings(Main.I.Settings);
@@ -220,6 +224,7 @@ public partial class GameWorld : Node3D
                 Input.MouseMode = Input.MouseModeEnum.Captured;
                 if (!IsNewGame && State.InVehicle && State.HasVehicle) Player.EnterVehicle(Vehicle);
                 Log.Info("GameWorld", $"World ready in {_loadTime:0.0}s ({Streamer.LoadedChunks} chunks)");
+                if (Destination != null) StartRouting();
                 _loadTime = 0;
             }
             return;
@@ -248,6 +253,7 @@ public partial class GameWorld : Node3D
         audio.Sheltered = _sheltered;
         audio.ListenerPos = Player.GlobalPosition;
 
+        if (World.Map != null) UpdateNavigation(delta);
         if (World.Map != null && (_placeTimer -= delta) <= 0)
         {
             _placeTimer = 2.0;
@@ -260,6 +266,146 @@ public partial class GameWorld : Node3D
             _autosave = 180;
             SaveGame(false);
         }
+    }
+
+    // ---- navigation (real-map world) ----------------------------------------------------------
+
+    /// <summary>The current GPS route, or null. <see cref="Routing"/> is true while one is being worked out.</summary>
+    public MapRoute? Route { get; private set; }
+    public bool Routing { get; private set; }
+    public Vector2? Destination { get; private set; }
+    public float NavRemaining { get; private set; }
+    /// <summary>Next turn: -1 left, +1 right, 0 none in sight; and how far ahead it is.</summary>
+    public int NavTurn { get; private set; }
+    public float NavTurnDistance { get; private set; }
+    /// <summary>A point on the route a little way ahead, for the guidance arrow.</summary>
+    public Vector2 NavAhead { get; private set; }
+    private int _routeVersion, _routeIndex;
+    private double _navTimer;
+    private bool _teleporting;
+    private readonly System.Collections.Concurrent.ConcurrentQueue<(int version, MapRoute? route)> _routeDone = new();
+
+    private Vector2 FocusXZ
+    {
+        get
+        {
+            var p = Player.InVehicle ? Vehicle.GlobalPosition : Player.GlobalPosition;
+            return new Vector2(p.X, p.Z);
+        }
+    }
+
+    /// <summary>Sets (or with null, clears) the GPS destination and starts working out a route.</summary>
+    public void SetDestination(Vector2? destination)
+    {
+        Destination = destination;
+        State.Destination = destination == null ? null : new[] { destination.Value.X, destination.Value.Y };
+        Route = null;
+        NavTurn = 0;
+        _routeVersion++;
+        Routing = false;
+        if (destination != null) StartRouting();
+    }
+
+    private void StartRouting()
+    {
+        if (World.Map == null || Destination == null) return;
+        int version = ++_routeVersion;
+        Routing = true;
+        var from = FocusXZ; var to = Destination.Value;
+        var data = World.Map.Data;
+        System.Threading.Tasks.Task.Run(() =>
+        {
+            MapRoute? route = null;
+            try
+            {
+                long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
+                route = new MapRouter(data).Find(from, to, () => _routeVersion != version);
+                Log.Info("GameWorld", $"Routing took {System.Diagnostics.Stopwatch.GetElapsedTime(t0).TotalSeconds:0.0} s ({(route == null ? "no route" : $"{route.Length / 1000f:0.0} km")})");
+            }
+            catch (Exception e) { GD.PushError($"[GameWorld] Routing failed: {e}"); }
+            _routeDone.Enqueue((version, route));
+        });
+    }
+
+    private void UpdateNavigation(double delta)
+    {
+        while (_routeDone.TryDequeue(out var done))
+        {
+            if (done.version != _routeVersion) continue;
+            Routing = false;
+            Route = done.route;
+            _routeIndex = 0;
+            if (Route == null) Toast("No road route found to that spot.");
+            else Toast($"Route set: {Route.Length / 1000f:0.0} km.");
+        }
+        if (_teleporting && Streamer.IsSolidAt(Player.GlobalPosition))
+        {
+            _teleporting = false;
+            Player.SetPhysicsProcess(true);
+        }
+        _navTimer -= delta;
+        if (Route == null || _navTimer > 0) return;
+        _navTimer = 0.25;
+        var route = Route;
+        var pos = FocusXZ;
+        int idx = route.Nearest(pos, _routeIndex, out float off);
+        _routeIndex = idx;
+        NavRemaining = route.Length - route.Along[idx];
+        if (NavRemaining < 35f && off < 45f)
+        {
+            Toast("You have arrived.");
+            SetDestination(null);
+            return;
+        }
+        if (off > 85f && !Routing) { StartRouting(); return; }   // wandered off: plan again from here
+
+        // a point about 45 m ahead for the arrow
+        int ahead = idx;
+        while (ahead < route.Points.Length - 1 && route.Along[ahead] - route.Along[idx] < 45f) ahead++;
+        NavAhead = route.Points[ahead];
+
+        // the next real turn: where the heading swings by more than 40 degrees within a few points
+        NavTurn = 0;
+        for (int j = Math.Max(idx + 1, 2); j < route.Points.Length - 2; j++)
+        {
+            float ahead_m = route.Along[j] - route.Along[idx];
+            if (ahead_m > 3000f) break;
+            var a = route.Points[j] - route.Points[j - 2];
+            var b = route.Points[j + 2] - route.Points[j];
+            if (a.LengthSquared() < 1f || b.LengthSquared() < 1f) continue;
+            float turn = a.AngleTo(b);
+            if (MathF.Abs(turn) < Mathf.DegToRad(40f)) continue;
+            NavTurn = turn > 0 ? 1 : -1;
+            NavTurnDistance = MathF.Max(0f, ahead_m);
+            break;
+        }
+    }
+
+    /// <summary>
+    /// Test-phase fast travel: puts the car (and the player with or beside it) on the nearest road
+    /// to a map position. The world streams in around the new spot before anything moves.
+    /// </summary>
+    public void TeleportTo(float x, float z)
+    {
+        var map = World.Map;
+        if (map == null || !IsReady) return;
+        float yaw = 0f;
+        if (!map.NearestRoad(x, z, 600f, 1.4f, out var pos, out yaw)) pos = new Vector3(x, map.Height(x, z), z);
+        Vehicle.LinearVelocity = Vector3.Zero;
+        Vehicle.AngularVelocity = Vector3.Zero;
+        Vehicle.GlobalTransform = new Transform3D(new Basis(Vector3.Up, yaw), pos + Vector3.Up * 0.45f);
+        if (!Player.InVehicle)
+        {
+            var right = new Vector3(MathF.Cos(yaw), 0, -MathF.Sin(yaw));
+            var pp = pos + right * 2.4f;
+            pp.Y = map.Height(pp.X, pp.Z) + 0.2f;
+            Player.GlobalPosition = pp;
+            Player.SetPhysicsProcess(false);
+            _teleporting = true;
+        }
+        if (Destination != null) StartRouting();
+        var place = map.NearestPlace(pos.X, pos.Z, 5000f);
+        Toast(place != null ? $"Moved to the road near {place.Name}." : "Moved to the nearest road.");
     }
 
     private double _placeTimer = 6;
