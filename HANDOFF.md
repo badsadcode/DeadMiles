@@ -153,6 +153,18 @@ wall after ~150 m. It proves the surface is drivable, not that a route can be fo
   `route=ferry` lines exist in OSM) plus the Øresund bridge and tunnel; tile data in the tens of GB,
   so packs per country or region downloaded on demand rather than kept in git; multiplayer is the
   obvious follow-on and Thornwake already has networking code (`Game/Rewrite/Net`).
+- **Real elevation and water (discussed 12 Nov).** Height data: Copernicus DEM GLO-30 (free,
+  global, ~30 m, but a surface model: forests and city blocks show as raised ground); Poland's
+  GUGiK NMT (free, 1 m / 5 m, bare ground) is better for Poland. No manual alignment: sample the
+  height at each tile grid point via the tile's lat/lon and store a height grid in the tile.
+  Work needed: smooth heights along roads, reconcile with the invented bridge ramps, and replace
+  the single global water level. Thornwake's water looks like the answer to the last one: river
+  sheets that follow the terrain (`WaterRiver.gdshader`, `TerrainSampler.Water.cs`), waterfalls
+  (`Waterfalls.cs`), an FFT ocean with a height function (`Ocean/OceanFft.cs`), local water
+  simulation (`LocalWaterView.cs`), hydrology in `Game/WorldGen/Hydrology.cs`. Only file names
+  and header comments were read. Expectation: use its drawing/simulation side and feed it real
+  OSM river lines and lake outlines; carve rivers a few metres into the DEM along their mapped
+  line so water always sits in a channel.
 - **Tile editor** as a Godot editor tool, storing overrides per tile (replace building N with a
   model, add props, mark bus stops / depots) so the generated map can be re-imported without
   losing edits.
