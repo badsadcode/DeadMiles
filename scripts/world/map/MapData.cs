@@ -368,7 +368,20 @@ public sealed class MapData
     private readonly string _dir;
     private float _wdUnit = 4f;
 
-    public static string IndexPath(string name) => $"res://map/{name}.idx";
+    /// <summary>
+    /// Where the map packs live: inside the project while developing, or a "map" folder beside the
+    /// executable in an exported game (the packs are too big to be worth baking into the .pck).
+    /// </summary>
+    public static string MapDir => _mapDir ??= ResolveMapDir();
+    private static string? _mapDir;
+
+    private static string ResolveMapDir()
+    {
+        if (Godot.DirAccess.DirExistsAbsolute("res://map")) return "res://map/";
+        return OS.GetExecutablePath().GetBaseDir().Replace('\\', '/') + "/map/";
+    }
+
+    public static string IndexPath(string name) => $"{MapDir}{name}.idx";
     public static bool Exists(string name) => Godot.FileAccess.FileExists(IndexPath(name));
 
     private static long Key(int tx, int tz) => ((long)tx << 32) ^ (uint)tz;
@@ -376,7 +389,7 @@ public sealed class MapData
     public MapData(string name, int seed)
     {
         Name = name;
-        _dir = "res://map/";
+        _dir = MapDir;
         Macro = new Noise2(seed);
         Hills = new Noise2(seed + 101);
         using var f = Godot.FileAccess.Open(IndexPath(name), Godot.FileAccess.ModeFlags.Read)
@@ -408,7 +421,7 @@ public sealed class MapData
     public static List<MapPlace> ReadPlaces(string name)
     {
         var list = new List<MapPlace>();
-        string path = $"res://map/{name}.places.json";
+        string path = $"{MapDir}{name}.places.json";
         if (!Godot.FileAccess.FileExists(path)) return list;
         using var f = Godot.FileAccess.Open(path, Godot.FileAccess.ModeFlags.Read);
         if (f == null) return list;
