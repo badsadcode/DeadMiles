@@ -77,7 +77,7 @@ public partial class ChunkStreamer : Node3D
             _lampMesh = MapMesher.LampMesh(furniture);
             _poleMesh = MapMesher.PoleMesh(furniture);
             _pylonMesh = MapMesher.PylonMesh(furniture);
-            _mapPlaces = new MapPlaces(world.Map, poiBuilder, _poiRoot);
+            _mapPlaces = new MapPlaces(world.Map, poiBuilder, _poiRoot, (d, n) => PoiSpawned?.Invoke(d, n), d => PoiRemoved?.Invoke(d));
             var sky = new Node3D { Name = "Skyline" };
             AddChild(sky);
             _skyline = new MapSkyline(world.Map, sky, _buildingMat);
@@ -95,6 +95,10 @@ public partial class ChunkStreamer : Node3D
 
     public int LoadedChunks => _chunks.Count;
     public int PendingJobs => _running;
+    /// <summary>Worker time of the slowest and the most recent chunk build, in milliseconds (diagnostics).</summary>
+    public double SlowestBuildMs, LastBuildMs;
+    public long BuildCount;
+    public double TotalBuildMs;
 
     public override void _Process(double delta)
     {
@@ -153,7 +157,17 @@ public partial class ChunkStreamer : Node3D
                 var world = _world; var locals = _veg.Locals; float density = Density;
                 Task.Run(() =>
                 {
-                    try { _done.Enqueue(ChunkBuilder.Build(world, locals, c, lod, density)); }
+                    try
+                    {
+                        long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
+                        var built = ChunkBuilder.Build(world, locals, c, lod, density);
+                        double ms = System.Diagnostics.Stopwatch.GetElapsedTime(t0).TotalMilliseconds;
+                        LastBuildMs = ms;
+                        if (ms > SlowestBuildMs) SlowestBuildMs = ms;
+                        System.Threading.Interlocked.Increment(ref BuildCount);
+                        lock (_done) TotalBuildMs += ms;
+                        _done.Enqueue(built);
+                    }
                     catch (Exception e)
                     {
                         GD.PushError($"[ChunkStreamer] Chunk {c} failed: {e}");

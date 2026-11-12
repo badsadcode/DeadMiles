@@ -18,12 +18,23 @@ public sealed class MapPlaces
     private readonly PoiBuilder _builder;
     private readonly Node3D _root;
     private readonly Dictionary<string, Node3D> _live = new();
+    private readonly Dictionary<string, PoiDesc> _occupiable = new();
+    private readonly Dictionary<long, List<Stash>> _stashes = new();
+    private readonly Action<PoiDesc, Node3D> _spawned;
+    private readonly Action<PoiDesc> _removed;
+
+    /// <summary>A lootable spot by the front door of an ordinary house or farm building.</summary>
+    private readonly record struct Stash(string Id, Vector3 Pos, float Yaw, bool Farm);
     private readonly Dictionary<long, List<(string id, Vector3 pos, float yaw)>> _wrecks = new();
     private readonly List<string> _remove = new();
+    /// <summary>Stands in for places that had nowhere sensible to go, so they are not retried every tick.</summary>
+    private readonly Node3D Skipped = new() { Position = new Vector3(0, -10000, 0) };
+    private const int MaxOccupied = 2;
+    private const float OccupiedSpacing = 260f;
 
-    public MapPlaces(MapWorld map, PoiBuilder builder, Node3D root)
+    public MapPlaces(MapWorld map, PoiBuilder builder, Node3D root, Action<PoiDesc, Node3D> spawned, Action<PoiDesc> removed)
     {
-        _map = map; _builder = builder; _root = root;
+        _map = map; _builder = builder; _root = root; _spawned = spawned; _removed = removed;
     }
 
     public void Update(Vector3 fp)
@@ -46,6 +57,14 @@ public sealed class MapPlaces
                     Place(p, x, z);
                     built++;
                 }
+                foreach (var st in StashesFor(tile))
+                {
+                    if (built >= 4) return;
+                    if (_live.ContainsKey(st.Id) || Dist2(st.Pos.X, st.Pos.Z, fp) > SpawnDist * SpawnDist) continue;
+                    var s = st;
+                    Add(s.Id, () => _builder.BuildMapStash(s.Id, s.Pos, s.Yaw, s.Farm), s.Farm ? PoiKind.Farmhouse : null, s.Pos, s.Yaw);
+                    built++;
+                }
                 foreach (var (id, pos, yaw) in WrecksFor(tile))
                 {
                     if (built >= 4) return;
@@ -57,13 +76,23 @@ public sealed class MapPlaces
         }
         _remove.Clear();
         foreach (var (id, node) in _live)
-            if (Dist2(node.Position.X, node.Position.Z, fp) > DespawnDist * DespawnDist) _remove.Add(id);
-        foreach (var id in _remove) { _live[id].QueueFree(); _live.Remove(id); }
+            if (node != Skipped && Dist2(node.Position.X, node.Position.Z, fp) > DespawnDist * DespawnDist) _remove.Add(id);
+        if (_live.Count > 4000) ForgetSkipped();
+        foreach (var id in _remove)
+        {
+            if (_occupiable.Remove(id, out var desc)) _removed(desc);
+            _live[id].QueueFree();
+            _live.Remove(id);
+        }
     }
 
     private static float Dist2(float x, float z, Vector3 fp) => (x - fp.X) * (x - fp.X) + (z - fp.Z) * (z - fp.Z);
 
-    private void Add(string id, Func<Node3D> build)
+    /// <summary>
+    /// Builds and registers a place. With <paramref name="occupiedAs"/> set, a share of places is
+    /// announced to the encounter system, which may put people there (friendly, wary or hostile).
+    /// </summary>
+    private void Add(string id, Func<Node3D> build, PoiKind? occupiedAs = null, Vector3 pos = default, float yaw = 0f)
     {
         Node3D node;
         try { node = build(); }
@@ -74,6 +103,17 @@ public sealed class MapPlaces
         }
         _root.AddChild(node);
         _live[id] = node;
+        if (occupiedAs == null) return;
+        uint seed = Hash.OfString(id);
+        if (Hash.F01(Hash.Mix(seed ^ 0x51ed270bU)) > 0.3f) return;   // most places are simply empty
+        // Keep company rare even downtown, where a single block can hold a dozen cafes.
+        if (_occupiable.Count >= MaxOccupied) return;
+        foreach (var other in _occupiable.Values)
+            if (Dist2(other.Center.X, other.Center.Z, pos) < OccupiedSpacing * OccupiedSpacing) return;
+        // local -Z of a place looks away from the street here, so people stand out front
+        var desc = new PoiDesc { Id = id, Kind = occupiedAs.Value, Segment = 99, Center = pos, Yaw = yaw + Mathf.Pi, Radius = 9f, Seed = seed };
+        _occupiable[id] = desc;
+        _spawned(desc, node);
     }
 
     /// <summary>
@@ -86,7 +126,7 @@ public sealed class MapPlaces
         if (p.Kind == MapPoiKind.Fuel && _map.NearestCanopy(x, z, 70f, out float cx, out float cz, out float cyaw))
         {
             var under = new Vector3(cx, _map.Height(cx, cz), cz);
-            Add(p.Id, () => _builder.BuildMapPoi(p, under, cyaw));
+            Add(p.Id, () => _builder.BuildMapPoi(p, under, cyaw), PoiKind.GasStation, under, cyaw);
             return;
         }
         Vector2 dir = new(1, 0);
@@ -103,14 +143,65 @@ public sealed class MapPlaces
             px = x + dir.X * t; pz = z + dir.Y * t;
             if (_map.IsWild(px, pz, 1.1f)) break;
         }
-        if (!_map.IsWild(px, pz, 0.4f) && _map.RoadEdgeDistance(px, pz, 12f) < 0.6f)
+        if (!_map.IsWild(px, pz, 0.6f))
         {
-            // ended up on the carriageway: step back onto the verge
-            px -= dir.X * 2.5f; pz -= dir.Y * 2.5f;
+            // Still on a carriageway or against a wall (shops in underpasses, arcades, station
+            // halls): look around for the nearest clear ground, and give up if there is none.
+            bool clear = false;
+            for (float ring = 3f; ring <= 27f && !clear; ring += 4f)
+            {
+                for (int a = 0; a < 12 && !clear; a++)
+                {
+                    float ang = a * Mathf.Tau / 12f + ring;
+                    float qx = px + MathF.Cos(ang) * ring, qz = pz + MathF.Sin(ang) * ring;
+                    if (!_map.IsWild(qx, qz, 0.6f)) continue;
+                    px = qx; pz = qz; clear = true;
+                }
+            }
+            if (!clear) { _live[p.Id] = Skipped; return; }
         }
         var pos = new Vector3(px, _map.Height(px, pz), pz);
         float yaw = MathF.Atan2(dir.X, dir.Y);   // local +Z looks at the road
-        Add(p.Id, () => _builder.BuildMapPoi(p, pos, yaw));
+        PoiKind? occupied = p.Kind switch
+        {
+            MapPoiKind.Fuel => PoiKind.GasStation, MapPoiKind.Diner => PoiKind.Diner, MapPoiKind.Garage => PoiKind.Workshop,
+            MapPoiKind.Camp => PoiKind.Campsite, MapPoiKind.Police => PoiKind.Checkpoint, _ => null,
+        };
+        Add(p.Id, () => _builder.BuildMapPoi(p, pos, yaw), occupied, pos, yaw);
+    }
+
+    /// <summary>
+    /// Houses and farm buildings worth searching, rolled once per tile: roughly one house in nine
+    /// and one barn in five, with the stash set just outside the front (longest) wall.
+    /// </summary>
+    private List<Stash> StashesFor(MapTile tile)
+    {
+        long key = ((long)tile.Tx << 32) ^ (uint)tile.Tz;
+        if (_stashes.TryGetValue(key, out var list)) return list;
+        list = new List<Stash>();
+        foreach (var b in tile.Buildings)
+        {
+            if (b.Ghost || b.IsPart) continue;
+            bool farm = b.Type == BuildingKind.Farm;
+            if (!farm && b.Type != BuildingKind.House) continue;
+            float roll = Hash.F01(Hash.Of(tile.Tx, tile.Tz, b.Index, 733));
+            if (roll > (farm ? 0.2f : 0.11f)) continue;
+            int i = MapMesher.FrontWall(b), j = (i + 1) % b.RX[0].Length;
+            float ax = b.RX[0][i], az = b.RZ[0][i], bx = b.RX[0][j], bz = b.RZ[0][j];
+            float dx = bx - ax, dz = bz - az;
+            float len = MathF.Sqrt(dx * dx + dz * dz);
+            if (len < 2.5f) continue;
+            // outward normal of a positively wound outline, then a step off-centre so the door stays clear
+            float nx = dz / len, nz = -dx / len;
+            float along = 0.5f + (len > 5f ? 1.6f / len : 0f);
+            float x = (float)(tile.OriginX + ax + dx * along + nx * 0.75f), z = (float)(tile.OriginZ + az + dz * along + nz * 0.75f);
+            var ctx = _map.Point(x, z, 3f);
+            if (ctx.InBuilding(0, 0, 0.3f) || !ctx.IsWild(0, 0, -1.2f)) continue;   // blocked by a neighbour or in the road
+            list.Add(new Stash($"h{tile.Tx}_{tile.Tz}_{b.Index}", new Vector3(x, _map.Height(x, z), z), MathF.Atan2(nx, nz), farm));
+        }
+        _stashes[key] = list;
+        if (_stashes.Count > 64) _stashes.Clear();
+        return list;
     }
 
     /// <summary>Abandoned cars for a tile, rolled once from the tile coordinates.</summary>
@@ -146,9 +237,16 @@ public sealed class MapPlaces
         return list;
     }
 
+    private void ForgetSkipped()
+    {
+        _remove.Clear();
+        foreach (var (id, node) in _live) if (node == Skipped) _remove.Add(id);
+        foreach (var id in _remove) _live.Remove(id);
+    }
+
     public void Clear()
     {
-        foreach (var n in _live.Values) n.QueueFree();
+        foreach (var n in _live.Values) if (n != Skipped) n.QueueFree();
         _live.Clear();
     }
 }

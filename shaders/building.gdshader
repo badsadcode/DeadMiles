@@ -50,7 +50,8 @@ void fragment() {
 	wall *= 1.0 - 0.28 * streak;
 	wall *= mix(0.62, 1.0, smoothstep(-0.2, 0.9, UV.y + (n_fine - 0.5) * 0.5));
 
-	float len = UV2.x;
+	float len = abs(UV2.x);
+	float front = step(UV2.x, -0.01);
 	float height = UV2.y;
 	float floors = max(1.0, floor(height / 2.9));
 	float fh = height / floors;
@@ -74,8 +75,18 @@ void fragment() {
 	glass_col = mix(glass_col, frame_col * 0.8, mull * 0.8);
 	vec3 board_col = vec3(0.20, 0.15, 0.10) * (0.7 + 0.5 * vnoise(vec2(xu * 9.0, yv * 1.5 + r * 30.0)));
 	vec3 pane = mix(glass_col, board_col, boarded);
+	// front door: replaces the ground-floor window in the middle bay of the front wall
+	float door_bay = front * step(cell.y, 0.5) * step(abs(cell.x - floor(cols * 0.5)), 0.5) * in_wall * has_windows;
+	window *= 1.0 - door_bay;
+	float door_w = min(0.52, cw * 0.5 - 0.2);
+	float door_frame = smoothstep(door_w + 0.08, door_w + 0.06, abs(xu)) * smoothstep(2.2, 2.18, yv);
+	float door_leaf = smoothstep(door_w, door_w - 0.02, abs(xu)) * smoothstep(2.12, 2.1, yv);
+	vec3 door_col = mix(vec3(0.13, 0.085, 0.05), vec3(0.10, 0.16, 0.14), step(0.5, r)) * (0.75 + 0.5 * vnoise(vec2(xu * 14.0, yv * 2.0)));
+	door_col *= 1.0 - 0.35 * smoothstep(0.03, 0.0, abs(abs(xu) - door_w * 0.5)) ;
 	wall = mix(wall, frame_col, frame * window);
 	wall = mix(wall, pane, glass * window);
+	wall = mix(wall, frame_col * 0.8, door_frame * door_bay);
+	wall = mix(wall, door_col, door_leaf * door_bay);
 	float glassy = glass * window * (1.0 - boarded);
 
 	// ---- roofs ----

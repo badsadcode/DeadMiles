@@ -226,6 +226,8 @@ public partial class DebugHarness : Node
             await Shot($"view{n++}");
         }
         g.Player.SetPhysicsProcess(true);
+        var st = g.Streamer;
+        Report($"chunk builds: {st.BuildCount}, average {st.TotalBuildMs / Math.Max(1, st.BuildCount):0.0} ms, slowest {st.SlowestBuildMs:0.0} ms (worker threads)");
     }
 
     private async Task TestMapScreen()

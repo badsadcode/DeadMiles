@@ -850,6 +850,28 @@ public sealed class PoiBuilder
         return root;
     }
 
+    /// <summary>
+    /// Something to search at an ordinary house (a crate left on the porch) or farm building
+    /// (a tool locker), set against the front wall. Local +Z points away from the wall.
+    /// </summary>
+    public Node3D BuildMapStash(string id, Vector3 pos, float yaw, bool farm)
+    {
+        var k = MapKit(id, pos, yaw, out var root);
+        if (farm)
+        {
+            k.Container(new Vector3(0, 0.75f, -0.3f), new Vector3(1.1f, 1.5f, 0.5f), Rust, "Tool locker", "barn");
+            if (k.Rng.Chance(0.5f)) Barrel(k, new Vector3(1.1f, 0, -0.2f), k.Rng.Chance(0.5f) ? Rust : Olive);
+        }
+        else
+        {
+            bool kitchen = k.Rng.Chance(0.55f);
+            k.Container(new Vector3(0, 0.3f, -0.25f), new Vector3(0.9f, 0.6f, 0.55f), k.Rng.Chance(0.5f) ? Wood : PaleWood,
+                kitchen ? "Porch crate" : "Left luggage", kitchen ? "kitchen" : "bedroom");
+            if (k.Rng.Chance(0.3f)) k.Container(new Vector3(1.0f, 0.4f, -0.3f), new Vector3(0.5f, 0.8f, 0.5f), Metal, "Bin", "trash");
+        }
+        return root;
+    }
+
     /// <summary>An abandoned car beside (or on) a real road.</summary>
     public Node3D BuildMapWreck(string id, Vector3 pos, float yaw)
     {

@@ -515,6 +515,7 @@ public static class MapMesher
         if (eave - bottom > 0.05f)
         {
             float wallH = eave - floor;
+            int front = wallKind == KindWindows && b.MinHeight < 0.05f ? FrontWall(b) : -1;
             for (int q = 0; q < b.RX.Length; q++)
             {
                 var rx = b.RX[q]; var rz = b.RZ[q];
@@ -527,7 +528,8 @@ public static class MapMesher
                     float len = MathF.Sqrt(dx * dx + dz * dz);
                     if (len < 0.02f) continue;
                     var n = new Vector3(dz / len, 0, -dx / len);
-                    var meta = new Vector2(len, wallH);
+                    // a negative length tells the shader this wall carries the front door
+                    var meta = new Vector2(q == 0 && i == front ? -len : len, wallH);
                     int v = mesh.V.Count;
                     mesh.Add(new Vector3(ax, bottom, az), n, new Vector2(0, bottom - floor), meta, wallC);
                     mesh.Add(new Vector3(bx, bottom, bz), n, new Vector2(len, bottom - floor), meta, wallC);
@@ -587,6 +589,20 @@ public static class MapMesher
             for (int i = 0; i + 2 < tris.Count; i += 3)
                 mesh.Tri(baseV + tris[i], baseV + tris[i + 1], baseV + tris[i + 2], Vector3.Up, collision);
         }
+    }
+
+    /// <summary>Index of the outline edge that gets the front door: the longest one.</summary>
+    public static int FrontWall(MapBuilding b)
+    {
+        var rx = b.RX[0]; var rz = b.RZ[0];
+        int best = 0; float bestLen = 0;
+        for (int i = 0; i < rx.Length; i++)
+        {
+            int j = (i + 1) % rx.Length;
+            float l = (rx[j] - rx[i]) * (rx[j] - rx[i]) + (rz[j] - rz[i]) * (rz[j] - rz[i]);
+            if (l > bestLen) { bestLen = l; best = i; }
+        }
+        return best;
     }
 
     [ThreadStatic] private static List<int>? _earScratch;
