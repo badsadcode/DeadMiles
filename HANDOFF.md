@@ -145,6 +145,14 @@ wall after ~150 m. It proves the surface is drivable, not that a route can be fo
   (`Game/Rewrite/WorldStreamer.cs`). Only the README and those two files were skimmed; how tightly
   the streamer is tied to Thornwake's terrain generator has not been checked. Likely best route:
   OSM importer + tile format from here, world machinery from Thornwake.
+- **The real goal (Tom, 12 Nov):** not just Poland but a drivable Baltic loop — Poland, Lithuania,
+  Latvia, Estonia, Finland, Sweden and Denmark — so he can "drive" to family in Sweden and friends
+  in Denmark and Estonia, who all play Project Zomboid with him. He likes working big and does not
+  mind breaking things. Consequences to plan for: one map projection will not do across ~2000 km
+  (project per tile or per region around the moving origin); sea crossings need ferries (real
+  `route=ferry` lines exist in OSM) plus the Øresund bridge and tunnel; tile data in the tens of GB,
+  so packs per country or region downloaded on demand rather than kept in git; multiplayer is the
+  obvious follow-on and Thornwake already has networking code (`Game/Rewrite/Net`).
 - **Tile editor** as a Godot editor tool, storing overrides per tile (replace building N with a
   model, add props, mark bus stops / depots) so the generated map can be re-imported without
   losing edits.
