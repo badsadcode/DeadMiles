@@ -131,6 +131,7 @@ public partial class DebugHarness : Node
                     case "mapviews": await TestMapViews(); break;
                     case "mapscreen": await TestMapScreen(); break;
                     case "mapexit": await TestMapExit(); break;
+                    case "maprecover": await TestMapRecover(); break;
                     default: Report($"ERROR: unknown test '{test}'"); break;
                 }
             }
@@ -292,6 +293,52 @@ public partial class DebugHarness : Node
             Report($"drive leg {leg}: car speed {g.Vehicle.Speed:0.0}, road edge {map.RoadEdgeDistance(after.X, after.Z):0.0}, player out at local {local}, after 2.5 s y={after.Y:0.00} ground={g.World.Height(after.X, after.Z):0.00}");
             if (MathF.Abs(local.X) < 1.2f && local.Z < 2.5f) Report("ERROR: the player came out inside or on top of the car");
         }
+    }
+
+    /// <summary>Tips the car over in a field, then presses recover twice: upright first, then back on a road.</summary>
+    private async Task TestMapRecover()
+    {
+        await EnsureGame();
+        var g = GameWorld.I;
+        var map = g.World.Map;
+        if (map == null) { Report("ERROR: maprecover needs --map"); return; }
+        await Wait(2);
+        g.Player.EnterVehicle(g.Vehicle);
+        var start = g.Vehicle.GlobalPosition;
+        // shove it 25 m off the road and onto its roof
+        var off = start + new Vector3(18f, 0, 18f);
+        off.Y = g.World.Height(off.X, off.Z) + 1.2f;
+        g.Vehicle.Warp(new Transform3D(new Basis(Vector3.Forward, Mathf.Pi), off));
+        await Wait(3);
+        var p0 = g.Vehicle.GlobalPosition;
+        Report($"tipped: moved {p0.DistanceTo(start):0.0} m from the start, up={g.Vehicle.GlobalTransform.Basis.Y.Y:0.00}, road edge {map.RoadEdgeDistance(p0.X, p0.Z, 60f):0.0}");
+        if (p0.DistanceTo(start) < 10f) Report("ERROR: the car could not be moved at all");
+        g.Vehicle.Recover();
+        await Wait(3);
+        var p1 = g.Vehicle.GlobalPosition;
+        float up1 = g.Vehicle.GlobalTransform.Basis.Y.Y;
+        Report($"first recover: up={up1:0.00}, moved {p1.DistanceTo(p0):0.0} m");
+        if (up1 < 0.8f) Report("ERROR: the first recover did not put the car back on its wheels");
+        g.Vehicle.Recover();
+        await Wait(3);
+        var p2 = g.Vehicle.GlobalPosition;
+        float edge = map.RoadEdgeDistance(p2.X, p2.Z, 60f);
+        Report($"second recover: up={g.Vehicle.GlobalTransform.Basis.Y.Y:0.00}, moved {p2.DistanceTo(p1):0.0} m, road edge {edge:0.0}");
+        if (edge > 0.5f) Report("ERROR: the second recover did not put the car on a road");
+
+        // upright but off in a field (wedged): one press must tow it to the road
+        await Wait(13);
+        var field = g.Vehicle.GlobalPosition + new Vector3(-22f, 0, 20f);
+        field.Y = g.World.Height(field.X, field.Z) + 0.6f;
+        g.Vehicle.Warp(new Transform3D(Basis.Identity, field));
+        await Wait(3);
+        var q0 = g.Vehicle.GlobalPosition;
+        g.Vehicle.Recover();
+        await Wait(3);
+        var q1 = g.Vehicle.GlobalPosition;
+        float edge2 = map.RoadEdgeDistance(q1.X, q1.Z, 60f);
+        Report($"upright in a field (road edge {map.RoadEdgeDistance(q0.X, q0.Z, 60f):0.0}) -> one press: moved {q1.DistanceTo(q0):0.0} m, road edge {edge2:0.0}");
+        if (edge2 > 0.5f) Report("ERROR: one press did not tow an upright car to the road");
     }
 
     private async Task TestMapScreen()

@@ -391,9 +391,7 @@ public partial class GameWorld : Node3D
         if (map == null || !IsReady) return;
         float yaw = 0f;
         if (!map.NearestRoad(x, z, 600f, 1.4f, out var pos, out yaw)) pos = new Vector3(x, map.Height(x, z), z);
-        Vehicle.LinearVelocity = Vector3.Zero;
-        Vehicle.AngularVelocity = Vector3.Zero;
-        Vehicle.GlobalTransform = new Transform3D(new Basis(Vector3.Up, yaw), pos + Vector3.Up * 0.45f);
+        Vehicle.Warp(new Transform3D(new Basis(Vector3.Up, yaw), pos + Vector3.Up * 0.45f));
         if (!Player.InVehicle)
         {
             var right = new Vector3(MathF.Cos(yaw), 0, -MathF.Sin(yaw));
@@ -457,6 +455,12 @@ public partial class GameWorld : Node3D
             GetViewport().SetInputAsHandled();
         }
         else if (e.IsActionPressed("quicksave")) SaveGame(true);
+        else if (e.IsActionPressed("recover") && !Player.InVehicle && NearbyVehicle(20f) != null)
+        {
+            // also works from outside, standing by the car (after climbing out of a wreck, say)
+            Vehicle.Recover();
+            GetViewport().SetInputAsHandled();
+        }
     }
 
     // ---- services for other systems ------------------------------------------------------

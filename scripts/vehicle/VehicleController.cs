@@ -373,6 +373,26 @@ public partial class VehicleController : VehicleBody3D, IInteractable, IDamageab
     /// <summary>Starts the engine immediately (loading a save, automated tests).</summary>
     public void ForceEngine(bool on) { EngineOn = on && Fuel > 0 && EngineHealth > 1; _starting = false; }
 
+    /// <summary>
+    /// Moves the car somewhere else at once. A rigid body's transform belongs to the physics
+    /// server: writing only the node's transform can be overwritten by the next physics step, so
+    /// the new state is handed to the server as well.
+    /// </summary>
+    public void Warp(Transform3D to)
+    {
+        GlobalTransform = to;
+        var rid = GetRid();
+        PhysicsServer3D.BodySetState(rid, PhysicsServer3D.BodyState.Transform, to);
+        PhysicsServer3D.BodySetState(rid, PhysicsServer3D.BodyState.LinearVelocity, Vector3.Zero);
+        PhysicsServer3D.BodySetState(rid, PhysicsServer3D.BodyState.AngularVelocity, Vector3.Zero);
+        LinearVelocity = Vector3.Zero;
+        AngularVelocity = Vector3.Zero;
+        ResetPhysicsInterpolation();
+        _prevVelocity = Vector3.Zero;
+        _impactGrace = 1f;
+        _stuckTime = 0;
+    }
+
     /// <summary>Unsticks the car. First press rights it in place; a second press soon after tows it to the road.</summary>
     public void Recover()
     {
@@ -380,6 +400,9 @@ public partial class VehicleController : VehicleBody3D, IInteractable, IDamageab
         float now = (float)_clock;
         var p = GlobalPosition;
         bool toRoad = now - _lastRecover < 12f || p.Y < WorldGenerator.WaterLevel + 0.1f;
+        // On the real map a car that is already upright is wedged, not rolled: righting it in place
+        // would change nothing, so go straight to towing it onto the nearest road.
+        if (g.World.Map != null && GlobalTransform.Basis.Y.Y > 0.6f) toRoad = true;
         _lastRecover = now;
         float yaw;
         if (toRoad)
@@ -405,12 +428,7 @@ public partial class VehicleController : VehicleBody3D, IInteractable, IDamageab
             p.Y = g.World.Height(p.X, p.Z);
             g.Toast("You rock the car back onto its wheels. (Press again to pull it to the road.)");
         }
-        GlobalTransform = new Transform3D(new Basis(Vector3.Up, yaw), p + Vector3.Up * 0.6f);
-        LinearVelocity = Vector3.Zero;
-        AngularVelocity = Vector3.Zero;
-        _prevVelocity = Vector3.Zero;
-        _impactGrace = 1f;
-        _stuckTime = 0;
+        Warp(new Transform3D(new Basis(Vector3.Up, yaw), p + Vector3.Up * 0.6f));
     }
 
     // ---- simulation ----------------------------------------------------------------------
