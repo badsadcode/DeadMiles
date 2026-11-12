@@ -155,6 +155,7 @@ public static class ChunkBuilder
         {
             build.Map = new MapChunkGeometry();
             MapMesher.Build(ctx, ChunkSize, lod, build.Map, lod == 0);
+            if (build.Map.Posts != null) build.Trunks?.AddRange(build.Map.Posts);
         }
         return build;
     }
@@ -238,6 +239,38 @@ public static class ChunkBuilder
                 Write(list, new Transform3D(basis, local) * locals[type], tint);
                 if (build.Trunks != null && type < VegetationLibrary.Bush0)
                     build.Trunks.Add(new Vector4(local.X, local.Y, local.Z, (type <= VegetationLibrary.PineB ? 0.24f : 0.2f) * scale));
+            }
+        }
+
+        // Real-map world: trees that were mapped one by one (street trees, avenues) stand exactly there.
+        if (ctx != null)
+        {
+            var pts = ctx.Points;
+            for (int i = 0; i < pts.Count; i++)
+            {
+                var pt = pts[i];
+                if ((byte)pt.Y != MapPointKind.Tree) continue;
+                if (pt.X < 0 || pt.X >= ChunkSize || pt.Z < 0 || pt.Z >= ChunkSize) continue;
+                if (ctx.InBuilding(pt.X, pt.Z, 0.3f)) continue;
+                if (ctx.NearestGroundRoad(pt.X, pt.Z, out _, out _) < 0.5f) continue;   // never in the carriageway
+                float h = ctx.Height(pt.X, pt.Z, 0f, out _);
+                if (h < WorldGenerator.WaterLevel + 0.45f) continue;
+                var rng = new Rng(Hash.Of((int)(x0 + pt.X), (int)(z0 + pt.Z), i, 61));
+                int species = rng.Int(3);
+                int type = (rng.Chance(0.6f) ? VegetationLibrary.Maple0 : VegetationLibrary.Birch0) + species;
+                float scale = 1.5f + rng.F() * 0.9f;
+                var local = new Vector3(pt.X, h, pt.Z);
+                var basis = new Basis(Vector3.Up, rng.Range(0f, Mathf.Tau)).Scaled(Vector3.One * scale);
+                var tint = new Color(rng.Range(0.82f, 1.08f), rng.Range(0.85f, 1.1f), 0.9f, 1f);
+                if (lod >= 2)
+                {
+                    impostor ??= new List<float>(256);
+                    Write(impostor, new Transform3D(basis, local), tint);
+                    continue;
+                }
+                var list = lists[type] ??= new List<float>(512);
+                Write(list, new Transform3D(basis, local) * locals[type], tint);
+                build.Trunks?.Add(new Vector4(local.X, local.Y, local.Z, 0.2f * scale));
             }
         }
 

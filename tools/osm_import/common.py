@@ -43,7 +43,7 @@ ROAD_CLASS = {
     'motorway_link': (10, 6.0), 'trunk_link': (10, 6.0), 'primary_link': (10, 6.0),
     'secondary_link': (10, 5.5), 'tertiary_link': (10, 5.5),
 }
-RAIL = {'rail': 11}
+RAIL = {'rail': 11, 'tram': 12}
 
 # ---- land cover ------------------------------------------------------------------------------
 # raster classes (must match MapLand in MapData.cs); later entries in LAND_ORDER paint over earlier
@@ -95,7 +95,7 @@ def LANDUSE(tags):
 
 # ---- buildings -------------------------------------------------------------------------------
 B_GENERIC, B_HOUSE, B_APARTMENTS, B_COMMERCIAL, B_INDUSTRIAL, B_FARM, B_SHED, B_CHURCH, B_CIVIC, \
-    B_TOWER = range(10)
+    B_TOWER, B_CANOPY = range(11)
 
 _BUILDING = {
     'house': B_HOUSE, 'detached': B_HOUSE, 'semidetached_house': B_HOUSE, 'terrace': B_HOUSE,
@@ -108,8 +108,8 @@ _BUILDING = {
     'hangar': B_INDUSTRIAL, 'transformer_tower': B_SHED,
     'barn': B_FARM, 'farm_auxiliary': B_FARM, 'cowshed': B_FARM, 'stable': B_FARM, 'sty': B_FARM,
     'greenhouse': B_FARM, 'outbuilding': B_SHED,
-    'garage': B_SHED, 'garages': B_SHED, 'shed': B_SHED, 'hut': B_SHED, 'carport': B_SHED,
-    'roof': B_SHED, 'ruins': B_SHED, 'toilets': B_SHED,
+    'garage': B_SHED, 'garages': B_SHED, 'shed': B_SHED, 'hut': B_SHED, 'carport': B_CANOPY,
+    'roof': B_CANOPY, 'ruins': B_SHED, 'toilets': B_SHED,
     'church': B_CHURCH, 'chapel': B_CHURCH, 'cathedral': B_CHURCH, 'religious': B_CHURCH,
     'monastery': B_CHURCH, 'synagogue': B_CHURCH, 'mosque': B_CHURCH,
     'school': B_CIVIC, 'university': B_CIVIC, 'college': B_CIVIC, 'kindergarten': B_CIVIC,
@@ -122,7 +122,7 @@ _BUILDING = {
 # used when the map gives neither a height nor a storey count (metres to the top of the roof)
 BUILDING_DEFAULT_HEIGHT = {
     B_GENERIC: 6.0, B_HOUSE: 7.5, B_APARTMENTS: 15.0, B_COMMERCIAL: 6.5, B_INDUSTRIAL: 8.5,
-    B_FARM: 6.5, B_SHED: 3.0, B_CHURCH: 16.0, B_CIVIC: 10.0, B_TOWER: 22.0,
+    B_FARM: 6.5, B_SHED: 3.0, B_CHURCH: 16.0, B_CIVIC: 10.0, B_TOWER: 22.0, B_CANOPY: 5.2,
 }
 
 # must match MapRoof in MapData.cs
@@ -183,6 +183,23 @@ def poi_kind(tags):
     t = tags.get('tourism')
     if t in ('camp_site', 'picnic_site', 'wilderness_hut'):
         return P_CAMP
+    return None
+
+
+# small point features (must match MapPointKind in MapData.cs)
+PT_TREE, PT_LAMP, PT_POLE, PT_PYLON = range(4)
+
+
+def point_kind(tags):
+    if tags.get('natural') == 'tree':
+        return PT_TREE
+    if tags.get('highway') == 'street_lamp':
+        return PT_LAMP
+    p = tags.get('power')
+    if p == 'pole':
+        return PT_POLE
+    if p == 'tower':
+        return PT_PYLON
     return None
 
 

@@ -37,6 +37,7 @@ public partial class ChunkStreamer : Node3D
     private PoiBuilder _poiBuilder = null!;
     private ShaderMaterial _terrainMat = null!, _roadMat = null!, _waterMat = null!;
     private ShaderMaterial? _mapRoadMat, _buildingMat;
+    private Mesh? _lampMesh, _poleMesh, _pylonMesh;
     private MapPlaces? _mapPlaces;
     private MapSkyline? _skyline;
     private double _trimTimer = 5;
@@ -72,6 +73,10 @@ public partial class ChunkStreamer : Node3D
         {
             _mapRoadMat = new ShaderMaterial { Shader = GD.Load<Shader>("res://shaders/map_road.gdshader") };
             _buildingMat = new ShaderMaterial { Shader = GD.Load<Shader>("res://shaders/building.gdshader") };
+            var furniture = new StandardMaterial3D { VertexColorUseAsAlbedo = true, Roughness = 0.7f, Metallic = 0.3f };
+            _lampMesh = MapMesher.LampMesh(furniture);
+            _poleMesh = MapMesher.PoleMesh(furniture);
+            _pylonMesh = MapMesher.PylonMesh(furniture);
             _mapPlaces = new MapPlaces(world.Map, poiBuilder, _poiRoot);
             var sky = new Node3D { Name = "Skyline" };
             AddChild(sky);
@@ -260,6 +265,9 @@ public partial class ChunkStreamer : Node3D
             node.AddChild(new MeshInstance3D { Mesh = geo.Roads.ToMesh(_mapRoadMat!), CastShadow = GeometryInstance3D.ShadowCastingSetting.Off });
         if (!geo.Buildings.Empty)
             node.AddChild(new MeshInstance3D { Mesh = geo.Buildings.ToMesh(_buildingMat!) });
+        if (geo.Lamps != null) node.AddChild(MakeMultiMesh(_lampMesh!, geo.Lamps.ToArray(), geo.Lamps.Count / 16, false));
+        if (geo.Poles != null) node.AddChild(MakeMultiMesh(_poleMesh!, geo.Poles.ToArray(), geo.Poles.Count / 16, false));
+        if (geo.Pylons != null) node.AddChild(MakeMultiMesh(_pylonMesh!, geo.Pylons.ToArray(), geo.Pylons.Count / 16, true));
         AddFaces(node, geo.PavedFaces, "asphalt", true);
         AddFaces(node, geo.LooseFaces, "ground", false);
         AddFaces(node, geo.BuildingFaces, "hard", true);

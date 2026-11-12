@@ -3,7 +3,7 @@ render_mode cull_back, diffuse_burley;
 
 // Roads of the real-map world. One mesh carries every road in a chunk, so the per-road
 // properties travel in the vertex colour:
-//   R = surface (0 asphalt, 0.25 concrete, 0.5 gravel/dirt, 1 railway)
+//   R = surface (0 asphalt, 0.25 concrete, 0.5 gravel/dirt, 0.75 bare steel, 1 railway)
 //   G = markings (0 none, 0.33 centre dashes, 0.66 centre dashes + edge lines, 1 one-way lanes)
 //   B = half width / 16
 // UV.x = lateral offset in metres from the centre line, UV.y = distance along the road.
@@ -74,13 +74,17 @@ void fragment() {
 	loose *= 1.0 - 0.22 * rut;
 	vec3 crown = mix(vec3(0.05, 0.085, 0.03), vec3(0.085, 0.105, 0.04), n_mid);
 	loose = mix(loose, crown, (1.0 - rut) * smoothstep(0.45, 0.7, n_rut) * 0.6 * step(half_width, 2.4));
-	float is_loose = step(0.4, surf) * step(surf, 0.75);
+	float is_loose = step(0.4, surf) * step(surf, 0.62);
 	col = mix(col, loose, is_loose);
 
 	// ---- concrete (bridge parapets and undersides) ----
 	vec3 concrete = vec3(0.21, 0.205, 0.195) * (0.75 + 0.3 * n_mid + 0.2 * (n_fine - 0.5));
 	float is_concrete = step(0.12, surf) * step(surf, 0.38);
 	col = mix(col, concrete, is_concrete);
+
+	// ---- bare steel (tram rails set into the street) ----
+	float is_steel = step(0.65, surf) * step(surf, 0.85);
+	col = mix(col, vec3(0.16, 0.13, 0.11) * (0.8 + 0.4 * n_fine), is_steel);
 
 	// ---- railway: ballast, sleepers, two rails ----
 	float is_rail = step(0.85, surf);
@@ -92,8 +96,8 @@ void fragment() {
 	col = mix(col, ballast, is_rail);
 
 	// gravel shoulder outside the carriageway
-	float hard = 1.0 - max(is_loose, is_rail);
-	float shoulder = smoothstep(half_width - 0.1, half_width + 0.25, au + (n_mid - 0.5) * 0.4) * (1.0 - is_concrete);
+	float hard = 1.0 - max(max(is_loose, is_rail), is_steel);
+	float shoulder = smoothstep(half_width - 0.1, half_width + 0.25, au + (n_mid - 0.5) * 0.4) * (1.0 - is_concrete) * (1.0 - is_steel);
 	vec3 gravel = mix(vec3(0.10, 0.085, 0.065), vec3(0.17, 0.15, 0.12), n_mid) * (0.75 + 0.5 * n_fine);
 	col = mix(col, gravel, shoulder);
 
@@ -103,7 +107,7 @@ void fragment() {
 	float rough_wet = mix(0.28, 0.6, max(shoulder, 1.0 - hard));
 	ALBEDO = col * mix(1.0, 0.5, wet) * cloud_shade(wpos.xz, TIME);
 	ROUGHNESS = mix(rough_dry, rough_wet, wet) - puddle * 0.2;
-	METALLIC = rail_line * is_rail * 0.6;
+	METALLIC = max(rail_line * is_rail, is_steel) * 0.6;
 	SPECULAR = 0.4;
 	float fres = pow(1.0 - clamp(dot(NORMAL, VIEW), 0.0, 1.0), 4.0);
 	EMISSION = sky_tint * fres * wet * 0.35 * (1.0 - shoulder * 0.7) * hard;

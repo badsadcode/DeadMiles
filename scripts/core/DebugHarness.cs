@@ -121,6 +121,7 @@ public partial class DebugHarness : Node
                     case "mapair": await TestMapAir(); break;
                     case "mapdrive": await TestMapDrive(); break;
                     case "mapviews": await TestMapViews(); break;
+                    case "mapscreen": await TestMapScreen(); break;
                     default: Report($"ERROR: unknown test '{test}'"); break;
                 }
             }
@@ -225,6 +226,22 @@ public partial class DebugHarness : Node
             await Shot($"view{n++}");
         }
         g.Player.SetPhysicsProcess(true);
+    }
+
+    private async Task TestMapScreen()
+    {
+        await EnsureGame();
+        var g = GameWorld.I;
+        if (g.MapView == null) { Report("ERROR: mapscreen needs --map"); return; }
+        g.MapView.Toggle();
+        for (int zoom = 0; zoom < 4; zoom++)
+        {
+            g.MapView.SetZoom(zoom);
+            await Wait(zoom == 3 ? 14 : 6);
+            await Shot($"map_screen_zoom{zoom}");
+        }
+        g.MapView.Toggle();
+        Report($"map screen closed, visible={g.MapView.Visible}");
     }
 
     private async Task TestMapDrive()

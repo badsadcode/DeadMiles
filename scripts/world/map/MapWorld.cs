@@ -45,6 +45,8 @@ public sealed class MapContext
     public double Ox, Oz;
     public readonly List<MapSeg> Segs = new();
     public readonly List<MapBuildingRef> Buildings = new();
+    /// <summary>Mapped trees, lamps, poles and pylons: X/Z local metres, Y holds the <see cref="MapPointKind"/>.</summary>
+    public readonly List<Vector3> Points = new();
     private readonly HashSet<long> _seen = new();
     private MapTile? _tile;
 
@@ -54,7 +56,7 @@ public sealed class MapContext
     public void Reset(double ox, double oz, float minX, float minZ, float maxX, float maxZ)
     {
         Ox = ox; Oz = oz;
-        Segs.Clear(); Buildings.Clear(); _seen.Clear(); _tile = null;
+        Segs.Clear(); Buildings.Clear(); Points.Clear(); _seen.Clear(); _tile = null;
         double wx0 = ox + minX - Reach, wx1 = ox + maxX + Reach, wz0 = oz + minZ - Reach, wz1 = oz + maxZ + Reach;
         int tx0 = (int)Math.Floor(wx0 / MapTile.Size), tx1 = (int)Math.Floor(wx1 / MapTile.Size);
         int tz0 = (int)Math.Floor(wz0 / MapTile.Size), tz1 = (int)Math.Floor(wz1 / MapTile.Size);
@@ -89,6 +91,10 @@ public sealed class MapContext
                                 });
                             }
                         }
+                        var pc = tile.PointCell(cx, cz);
+                        if (pc != null)
+                            foreach (int pi in pc)
+                                Points.Add(new Vector3(offX + tile.PointX[pi], tile.PointKind[pi], offZ + tile.PointZ[pi]));
                         var bc = tile.BuildingCell(cx, cz);
                         if (bc != null)
                         {
@@ -122,7 +128,7 @@ public sealed class MapContext
         for (int i = 0; i < segs.Count; i++)
         {
             var s = segs[i];
-            if (s.Road.IsBridge) continue;
+            if (s.Road.IsBridge || s.Road.IsTram) continue;   // trams are laid into whatever they cross
             float pad = s.Hw + 10f;
             if (lx < MathF.Min(s.Ax, s.Bx) - pad || lx > MathF.Max(s.Ax, s.Bx) + pad ||
                 lz < MathF.Min(s.Az, s.Bz) - pad || lz > MathF.Max(s.Az, s.Bz) + pad) continue;
@@ -188,6 +194,7 @@ public sealed class MapContext
         {
             var r = list[i];
             var b = r.B;
+            if (b.IsCanopy) continue;   // open underneath
             float x = lx - r.OffX, z = lz - r.OffZ;
             if (x < b.MinX - margin || x > b.MaxX + margin || z < b.MinZ - margin || z > b.MaxZ + margin) continue;
             if (b.Contains(x, z)) return true;
@@ -235,6 +242,35 @@ public sealed class MapWorld
     }
 
     public bool InBuilding(float x, float z, float margin) => Point(x, z, margin + 1f).InBuilding(0, 0, margin);
+
+    /// <summary>Centre of the nearest roof-on-posts (fuel station canopy) within reach, if any.</summary>
+    public bool NearestCanopy(float x, float z, float reach, out float cx, out float cz, out float yaw)
+    {
+        var c = Point(x, z, reach);
+        float best = reach * reach;
+        cx = cz = yaw = 0;
+        bool found = false;
+        foreach (var r in c.Buildings)
+        {
+            var b = r.B;
+            if (!b.IsCanopy || b.Ghost || (b.MaxX - b.MinX) * (b.MaxZ - b.MinZ) < 30f) continue;
+            float bx = r.OffX + b.Cx, bz = r.OffZ + b.Cz;
+            float d = bx * bx + bz * bz;
+            if (d >= best) continue;
+            best = d; found = true;
+            cx = x + bx; cz = z + bz;
+            // line the pumps up with the canopy's longest edge
+            var rx = b.RX[0]; var rz = b.RZ[0];
+            float longest = 0;
+            for (int i = 0, j = rx.Length - 1; i < rx.Length; j = i++)
+            {
+                float dx = rx[i] - rx[j], dz = rz[i] - rz[j];
+                float len = dx * dx + dz * dz;
+                if (len > longest) { longest = len; yaw = MathF.Atan2(-dz, dx); }
+            }
+        }
+        return found;
+    }
 
     public byte LandAt(float x, float z) => Point(x, z).Land(0, 0);
 

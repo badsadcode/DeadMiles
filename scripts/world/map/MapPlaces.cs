@@ -82,6 +82,13 @@ public sealed class MapPlaces
     /// </summary>
     private void Place(MapPoi p, float x, float z)
     {
+        // Fuel stations: the pumps belong under the canopy, lined up with it.
+        if (p.Kind == MapPoiKind.Fuel && _map.NearestCanopy(x, z, 70f, out float cx, out float cz, out float cyaw))
+        {
+            var under = new Vector3(cx, _map.Height(cx, cz), cz);
+            Add(p.Id, () => _builder.BuildMapPoi(p, under, cyaw));
+            return;
+        }
         Vector2 dir = new(1, 0);
         float roadDist = 60f;
         if (_map.NearestRoad(x, z, 90f, 0f, out var road, out _))

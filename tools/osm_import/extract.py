@@ -18,7 +18,7 @@ import osmium
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from common import project, parse_float, ROAD_CLASS, RAIL, LANDUSE, building_type, \
-    BUILDING_DEFAULT_HEIGHT, ROOF_SHAPES, poi_kind, PLACE_RANK
+    BUILDING_DEFAULT_HEIGHT, ROOF_SHAPES, poi_kind, point_kind, PT_TREE, PLACE_RANK
 
 
 class Lines:
@@ -119,6 +119,9 @@ class Handler(osmium.SimpleHandler):
         self.buildings = Polys()
         self.pois = []      # (kind, x_cm, y_cm, name)
         self.places = []    # (rank, x_cm, y_cm, population, name)
+        self.pt_kind = array('B')   # trees, lamps, poles, pylons
+        self.pt_lon = array('d')
+        self.pt_lat = array('d')
         self.t0 = time.time()
         self.seen = 0
 
@@ -147,6 +150,12 @@ class Handler(osmium.SimpleHandler):
             return
         if not n.location.valid():
             return
+        pk = point_kind(n.tags)
+        if pk is not None:
+            self.pt_kind.append(pk)
+            self.pt_lon.append(n.location.lon)
+            self.pt_lat.append(n.location.lat)
+            return
         self.add_point_features(n.tags, n.location.lon, n.location.lat)
 
     # ---- lines ---------------------------------------------------------------------------
@@ -162,6 +171,21 @@ class Handler(osmium.SimpleHandler):
             self.add_road(w, tags, cls, default_width, hw)
         elif rw in RAIL and tags.get('service') not in ('yard', 'siding', 'spur', 'crossover'):
             self.add_road(w, tags, RAIL[rw], 3.2, None)
+        elif tags.get('natural') == 'tree_row':
+            # a mapped avenue: one tree roughly every 9 m along the line
+            lons, lats = self.coords(w)
+            if lons is not None:
+                x, y = project(lons, lats)
+                seg = np.hypot(np.diff(x), np.diff(y))
+                total = float(seg.sum())
+                if total > 4:
+                    cum = np.concatenate([[0.0], np.cumsum(seg)])
+                    at = np.arange(2.0, total, 9.0)
+                    li = np.interp(at, cum, lons)
+                    la = np.interp(at, cum, lats)
+                    self.pt_kind.extend([PT_TREE] * len(at))
+                    self.pt_lon.extend(li.tolist())
+                    self.pt_lat.extend(la.tolist())
         elif ww in ('river', 'stream', 'canal') and tags.get('tunnel') in (None, 'no'):
             width = parse_float(tags.get('width')) or {'river': 14.0, 'canal': 7.0, 'stream': 2.6}[ww]
             lons, lats = self.coords(w)
@@ -300,6 +324,13 @@ def main():
         dtype=[('rank', 'u1'), ('x', 'i4'), ('y', 'i4'), ('pop', 'i4')]))
     with open(os.path.join(work, 'place_names.txt'), 'w', encoding='utf-8') as f:
         f.write('\n'.join(n.replace('\n', ' ') for *_, n in h.places))
+    px, py = project(np.frombuffer(h.pt_lon, dtype=np.float64), np.frombuffer(h.pt_lat, dtype=np.float64))
+    pts = np.zeros(len(h.pt_kind), dtype=[('kind', 'u1'), ('x', 'i4'), ('y', 'i4')])
+    pts['kind'] = np.frombuffer(h.pt_kind, dtype=np.uint8)
+    pts['x'] = np.round(np.asarray(px) * 100)
+    pts['y'] = np.round(np.asarray(py) * 100)
+    np.save(os.path.join(work, 'points.npy'), pts)
+    print(f'{len(pts)} trees, lamps and poles', flush=True)
     print('Stage 1 done.', flush=True)
 
 

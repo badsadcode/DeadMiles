@@ -545,6 +545,30 @@ def build_pois(work):
     return per_tile
 
 
+def build_points(work):
+    """Individually mapped trees, street lamps, power poles and pylons."""
+    p = np.load(os.path.join(work, 'points.npy'))
+    x = p['x'] / 100.0
+    z = -p['y'] / 100.0
+    tx = np.floor(x / TILE).astype(np.int64)
+    tz = np.floor(z / TILE).astype(np.int64)
+    rec = np.zeros(len(p), dtype=[('kind', 'u1'), ('x', '<u2'), ('z', '<u2')])
+    rec['kind'] = p['kind']
+    rec['x'] = np.clip(np.round((x - tx * TILE) * 10), 0, 15359)
+    rec['z'] = np.clip(np.round((z - tz * TILE) * 10), 0, 15359)
+    order = np.lexsort((tz, tx))
+    tx, tz, rec = tx[order], tz[order], rec[order]
+    per_tile = {}
+    if len(rec):
+        change = np.nonzero((np.diff(tx) != 0) | (np.diff(tz) != 0))[0] + 1
+        starts = np.concatenate([[0], change])
+        ends = np.concatenate([change, [len(rec)]])
+        for a, b in zip(starts, ends):
+            per_tile[(int(tx[a]), int(tz[a]))] = rec[a:b]
+    log(f'{len(rec)} trees, lamps and poles over {len(per_tile)} tiles; kinds {np.bincount(p["kind"], minlength=4).tolist()}')
+    return per_tile
+
+
 def build_places(work):
     p = np.load(os.path.join(work, 'places.npy'))
     with open(os.path.join(work, 'place_names.txt'), encoding='utf-8') as f:
@@ -580,7 +604,8 @@ def main():
     roads = build_roads(args.work)
     buildings = build_buildings(args.work)
     pois = build_pois(args.work)
-    land = build_land(args.work, set(roads) | set(buildings))
+    points = build_points(args.work)
+    land = build_land(args.work, set(roads) | set(buildings) | set(points))
     txs = [t[0] for t in land]
     tzs = [t[1] for t in land]
     bounds = (min(txs), max(txs), min(tzs), max(tzs))
@@ -596,10 +621,12 @@ def main():
         r = roads.get(t, [])
         b = buildings.get(t, [])
         p = pois.get(t, [])
-        blob = bytearray(b'DMT1')
+        blob = bytearray(b'DMT2')
         blob += struct.pack('<I', len(r)) + b''.join(r)
         blob += struct.pack('<I', len(b)) + b''.join(b)
         blob += struct.pack('<H', len(p)) + b''.join(p)
+        pt = points.get(t)
+        blob += struct.pack('<I', 0 if pt is None else len(pt)) + (b'' if pt is None else pt.tobytes())
         blob += land[t]
         blob += wd[t]
         comp = zlib.compress(bytes(blob), 9)
@@ -616,7 +643,7 @@ def main():
 
     with open(os.path.join(args.out, f'{args.name}.idx'), 'wb') as f:
         f.write(b'DMIX')
-        f.write(struct.pack('<IfIIfddI', 1, TILE, LAND_RES, WD_RES, WD_UNIT, C.ORIGIN_LAT, C.ORIGIN_LON, len(index)))
+        f.write(struct.pack('<IfIIfddI', 2, TILE, LAND_RES, WD_RES, WD_UNIT, C.ORIGIN_LAT, C.ORIGIN_LON, len(index)))
         for tx, tz, pn, o, n, raw in index:
             f.write(struct.pack('<hhHIII', tx, tz, pn, o, n, raw))
     places = build_places(args.work)

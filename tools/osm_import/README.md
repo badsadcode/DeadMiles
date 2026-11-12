@@ -36,10 +36,11 @@ Download any `.osm.pbf` extract from <https://download.geofabrik.de>, set `ORIGI
 
 | Layer | Source | Used for |
 | --- | --- | --- |
-| Roads and railways | `highway=*`, `railway=rail` | ribbons with markings, bridges with ramps, collision |
+| Roads, railways, trams | `highway=*`, `railway=rail/tram` | ribbons with markings, bridges with ramps, collision |
 | Buildings | `building=*`, `building:part=*` | extruded footprints, roofs, heights, collision |
 | Land cover (4 m raster) | `landuse`, `natural`, `leisure`, water | ground colour, where trees and grass grow, lakes and rivers |
 | Water distance (48 m raster) | derived | flattens the invented relief towards real shores |
+| Trees, lamps, poles, pylons | `natural=tree`, `natural=tree_row`, `highway=street_lamp`, `power=pole/tower` | real street trees and street furniture |
 | Points of interest | `amenity=fuel`, `shop=*`, ... | fuel pumps and supply crates |
 | Places | `place=city/town/village` | start towns, name shown when you arrive |
 

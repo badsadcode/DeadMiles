@@ -27,18 +27,24 @@ public static class RoadFlag
 public static class RoadClass
 {
     public const byte Motorway = 0, Trunk = 1, Primary = 2, Secondary = 3, Tertiary = 4, Unclassified = 5,
-        Residential = 6, Living = 7, Service = 8, Track = 9, Link = 10, Rail = 11;
+        Residential = 6, Living = 7, Service = 8, Track = 9, Link = 10, Rail = 11, Tram = 12;
 }
 
 public static class BuildingKind
 {
     public const byte Generic = 0, House = 1, Apartments = 2, Commercial = 3, Industrial = 4, Farm = 5,
-        Shed = 6, Church = 7, Civic = 8, Tower = 9;
+        Shed = 6, Church = 7, Civic = 8, Tower = 9, Canopy = 10;
 }
 
 public static class RoofKind
 {
     public const byte Flat = 1, Gabled = 2, Hipped = 3, Pyramidal = 4, Dome = 5;
+}
+
+/// <summary>Small things mapped one by one.</summary>
+public static class MapPointKind
+{
+    public const byte Tree = 0, Lamp = 1, Pole = 2, Pylon = 3;
 }
 
 public enum MapPoiKind : byte { Fuel, Food, Shop, Medical, Diner, Garage, Police, Hardware, Camp }
@@ -57,6 +63,7 @@ public sealed class MapRoad
 
     public bool IsBridge => (Flags & RoadFlag.Bridge) != 0 && (Flags & RoadFlag.Tunnel) == 0;
     public bool IsRail => (Flags & RoadFlag.Rail) != 0;
+    public bool IsTram => Cls == RoadClass.Tram;
     public bool Unpaved => (Flags & RoadFlag.Unpaved) != 0;
     public bool Drivable => !IsRail;
 }
@@ -74,6 +81,8 @@ public sealed class MapBuilding
 
     public bool Ghost => (Flags & 1) != 0;
     public bool IsPart => (Flags & 4) != 0;
+    /// <summary>A roof on posts (fuel station canopy, carport): open underneath.</summary>
+    public bool IsCanopy => Type == BuildingKind.Canopy;
 
     public bool Contains(float x, float z)
     {
@@ -115,12 +124,16 @@ public sealed class MapTile
     public MapRoad[] Roads = Array.Empty<MapRoad>();
     public MapBuilding[] Buildings = Array.Empty<MapBuilding>();
     public MapPoi[] Pois = Array.Empty<MapPoi>();
+    /// <summary>Mapped trees, lamps, poles and pylons (tile-local metres).</summary>
+    public byte[] PointKind = Array.Empty<byte>();
+    public float[] PointX = Array.Empty<float>(), PointZ = Array.Empty<float>();
     public byte[] Land;
     public byte[] WaterDist;
     private float _wdUnit = 4f;
     /// <summary>Per bucket: packed (road index &lt;&lt; 12 | segment index).</summary>
     private readonly List<int>?[] _roadCells = new List<int>?[Cells * Cells];
     private readonly List<int>?[] _buildingCells = new List<int>?[Cells * Cells];
+    private readonly List<int>?[] _pointCells = new List<int>?[Cells * Cells];
 
     private static readonly byte[] EmptyLand = new byte[LandRes * LandRes];
     private static readonly byte[] EmptyWd = MakeFilled((WdRes + 1) * (WdRes + 1), 255);
@@ -141,7 +154,7 @@ public sealed class MapTile
         _wdUnit = wdUnit;
         using var ms = new MemoryStream(raw);
         using var r = new BinaryReader(ms);
-        if (r.ReadUInt32() != 0x31544D44u) throw new InvalidDataException("bad tile magic"); // "DMT1"
+        if (r.ReadUInt32() != 0x32544D44u) throw new InvalidDataException("bad tile magic"); // "DMT2"
 
         // Rasters sit at the end of the blob but are needed first (road heights depend on them).
         int rasterBytes = LandRes * LandRes + (WdRes + 1) * (WdRes + 1);
@@ -151,7 +164,7 @@ public sealed class MapTile
         Buffer.BlockCopy(raw, raw.Length - WaterDist.Length, WaterDist, 0, WaterDist.Length);
 
         int nRoads = (int)r.ReadUInt32();
-        Roads = new MapRoad[nRoads];
+        var roads = new List<MapRoad>(nRoads);
         var xs = new List<float>(); var zs = new List<float>(); var ls = new List<float>(); var al = new List<float>();
         for (int i = 0; i < nRoads; i++)
         {
@@ -185,12 +198,16 @@ public sealed class MapTile
             float floor = WorldGenerator.WaterLevel + 0.6f;
             for (int k = 0; k < road.X.Length; k++)
                 road.Y[k] = MathF.Max(BaseHeight(road.X[k], road.Z[k]), floor) + road.Lift[k];
-            Roads[i] = road;
+            // Railways and trams in tunnels run underground: nothing to draw or drive on.
+            if (road.IsRail && (road.Flags & RoadFlag.Tunnel) != 0) continue;
+            int index = roads.Count;
+            roads.Add(road);
             int segs = Math.Min(road.X.Length - 1, 4095);
             for (int k = 0; k < segs; k++)
                 Bucket(_roadCells, MathF.Min(road.X[k], road.X[k + 1]), MathF.Min(road.Z[k], road.Z[k + 1]),
-                    MathF.Max(road.X[k], road.X[k + 1]), MathF.Max(road.Z[k], road.Z[k + 1]), (i << 12) | k);
+                    MathF.Max(road.X[k], road.X[k + 1]), MathF.Max(road.Z[k], road.Z[k + 1]), (index << 12) | k);
         }
+        Roads = roads.ToArray();
 
         int nBuildings = (int)r.ReadUInt32();
         Buildings = new MapBuilding[nBuildings];
@@ -240,6 +257,15 @@ public sealed class MapTile
             p.Id = $"m{tx}_{tz}_{i}";
             Pois[i] = p;
         }
+
+        int nPoints = (int)r.ReadUInt32();
+        PointKind = new byte[nPoints]; PointX = new float[nPoints]; PointZ = new float[nPoints];
+        for (int i = 0; i < nPoints; i++)
+        {
+            PointKind[i] = r.ReadByte();
+            PointX[i] = r.ReadUInt16() * 0.1f; PointZ[i] = r.ReadUInt16() * 0.1f;
+            Bucket(_pointCells, PointX[i], PointZ[i], PointX[i], PointZ[i], i);
+        }
     }
 
     private static void Bucket(List<int>?[] cells, float x0, float z0, float x1, float z1, int value)
@@ -253,6 +279,7 @@ public sealed class MapTile
 
     public List<int>? RoadCell(int cx, int cz) => _roadCells[cz * Cells + cx];
     public List<int>? BuildingCell(int cx, int cz) => _buildingCells[cz * Cells + cx];
+    public List<int>? PointCell(int cx, int cz) => _pointCells[cz * Cells + cx];
 
     // ---- rasters (tile-local coordinates; lookups clamp to this tile so they never need a neighbour) ----
 
@@ -362,7 +389,7 @@ public sealed class MapData
         uint landRes = r.ReadUInt32(), wdRes = r.ReadUInt32();
         _wdUnit = r.ReadSingle();
         OriginLat = r.ReadDouble(); OriginLon = r.ReadDouble();
-        if (version != 1 || tile != MapTile.Size || landRes != MapTile.LandRes || wdRes != MapTile.WdRes)
+        if (version != 2 || tile != MapTile.Size || landRes != MapTile.LandRes || wdRes != MapTile.WdRes)
             throw new InvalidDataException($"map '{name}' was built with an incompatible importer (version {version})");
         int count = (int)r.ReadUInt32();
         for (int i = 0; i < count; i++)

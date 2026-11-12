@@ -36,6 +36,31 @@ public sealed class MeshData
         Tri(a, c, d, facing, collision);
     }
 
+    /// <summary>An axis-aligned box, optionally turned by <paramref name="yaw"/> around its own centre line.</summary>
+    public void Box(Vector3 min, Vector3 max, Color c, List<Vector3>? collision = null, float yaw = 0f, Vector2 uv2 = default)
+    {
+        var centre = (min + max) * 0.5f;
+        var half = (max - min) * 0.5f;
+        var basis = new Basis(Vector3.Up, yaw);
+        Span<Vector3> axes = stackalloc Vector3[] { Vector3.Right, Vector3.Up, Vector3.Back };
+        for (int axis = 0; axis < 3; axis++)
+        {
+            int u = (axis + 1) % 3, v = (axis + 2) % 3;
+            for (int sign = -1; sign <= 1; sign += 2)
+            {
+                var n = basis * (axes[axis] * sign);
+                var o = axes[axis] * (half[axis] * sign);
+                var du = axes[u] * half[u]; var dv = axes[v] * half[v];
+                int i = V.Count;
+                Add(centre + basis * (o - du - dv), n, new Vector2(0, 0), uv2, c);
+                Add(centre + basis * (o + du - dv), n, new Vector2(1, 0), uv2, c);
+                Add(centre + basis * (o + du + dv), n, new Vector2(1, 1), uv2, c);
+                Add(centre + basis * (o - du + dv), n, new Vector2(0, 1), uv2, c);
+                Quad(i, i + 1, i + 2, i + 3, n, collision);
+            }
+        }
+    }
+
     public ArrayMesh ToMesh(Material material)
     {
         var arrays = new Godot.Collections.Array();
@@ -59,6 +84,10 @@ public sealed class MapChunkGeometry
     public readonly MeshData Roads = new();
     public readonly MeshData Buildings = new();
     public List<Vector3>? PavedFaces, LooseFaces, BuildingFaces;
+    /// <summary>MultiMesh instance buffers for street lamps, wooden power poles and pylons.</summary>
+    public List<float>? Lamps, Poles, Pylons;
+    /// <summary>Thin colliders for the above: xyz local position, w radius.</summary>
+    public List<Vector4>? Posts;
 }
 
 /// <summary>Worker-side generation of road and building meshes from map data. No scene tree access.</summary>
@@ -104,8 +133,10 @@ public static class MapMesher
             var s = segs[i];
             float mx = (s.Ax + s.Bx) * 0.5f, mz = (s.Az + s.Bz) * 0.5f;
             if (mx < 0 || mx >= size || mz < 0 || mz >= size) continue;
-            AddRoadSegment(geo, s, lod);
+            if (s.Road.IsTram) { if (lod <= 1) AddTramSegment(geo.Roads, ctx, s); }
+            else AddRoadSegment(geo, s, lod);
         }
+        AddFurniture(ctx, size, lod, geo, collide);
         var list = ctx.Buildings;
         for (int i = 0; i < list.Count; i++)
         {
@@ -256,7 +287,157 @@ public static class MapMesher
         }
     }
 
+    /// <summary>Tram rails: two strips of steel laid on whatever surface the line crosses.</summary>
+    private static void AddTramSegment(MeshData mesh, MapContext ctx, in MapSeg s)
+    {
+        var road = s.Road;
+        int k = s.Index;
+        var p0 = new Vector2(s.Ax, s.Az); var p1 = new Vector2(s.Bx, s.Bz);
+        var m0 = Miter(road, k); var m1 = Miter(road, k + 1);
+        const float lift = 0.125f, gauge = 0.72f, half = 0.045f;
+        bool bridge = road.IsBridge;
+        float y0 = (bridge ? s.Ya : ctx.Height(p0.X, p0.Y, 0f, out _)) + lift;
+        float y1 = (bridge ? s.Yb : ctx.Height(p1.X, p1.Y, 0f, out _)) + lift;
+        var col = new Color(0.75f, 0f, 0.1f, 1f);
+        for (int side = -1; side <= 1; side += 2)
+        {
+            float a = side * gauge - half, b = side * gauge + half;
+            int v = mesh.V.Count;
+            mesh.Add(new Vector3(p0.X + m0.X * a, y0, p0.Y + m0.Y * a), Vector3.Up, new Vector2(a, road.Along[k]), Vector2.Zero, col);
+            mesh.Add(new Vector3(p0.X + m0.X * b, y0, p0.Y + m0.Y * b), Vector3.Up, new Vector2(b, road.Along[k]), Vector2.Zero, col);
+            mesh.Add(new Vector3(p1.X + m1.X * b, y1, p1.Y + m1.Y * b), Vector3.Up, new Vector2(b, road.Along[k + 1]), Vector2.Zero, col);
+            mesh.Add(new Vector3(p1.X + m1.X * a, y1, p1.Y + m1.Y * a), Vector3.Up, new Vector2(a, road.Along[k + 1]), Vector2.Zero, col);
+            mesh.Quad(v, v + 1, v + 2, v + 3, Vector3.Up);
+        }
+    }
+
+    // ---- street furniture -----------------------------------------------------------------
+
+    private static void AddFurniture(MapContext ctx, float size, int lod, MapChunkGeometry geo, bool collide)
+    {
+        var pts = ctx.Points;
+        for (int i = 0; i < pts.Count; i++)
+        {
+            var p = pts[i];
+            byte kind = (byte)p.Y;
+            if (kind == MapPointKind.Tree) continue;                       // trees go through the vegetation pass
+            if (p.X < 0 || p.X >= size || p.Z < 0 || p.Z >= size) continue;
+            if (lod >= 2 && kind != MapPointKind.Pylon) continue;          // small posts are not worth drawing far away
+            if (ctx.InBuilding(p.X, p.Z, 0.2f)) continue;
+            float y = ctx.Height(p.X, p.Z, 0f, out _);
+            if (y < WorldGenerator.WaterLevel + 0.2f) continue;
+            float yaw = 0f;
+            if (kind == MapPointKind.Lamp)
+            {
+                // the arm reaches out over the nearest carriageway
+                float best = 40f;
+                foreach (var s in ctx.Segs)
+                {
+                    if (!s.Road.Drivable) continue;
+                    float d = s.Distance(p.X, p.Z, out float u);
+                    if (d >= best) continue;
+                    best = d;
+                    float cx = s.Ax + (s.Bx - s.Ax) * u - p.X, cz = s.Az + (s.Bz - s.Az) * u - p.Z;
+                    if (d > 0.3f) yaw = MathF.Atan2(cx, cz);
+                }
+            }
+            else yaw = Hash.F01(Hash.Of((int)(p.X * 10f), (int)(p.Z * 10f), 5)) * Mathf.Tau;
+            var list = kind == MapPointKind.Lamp ? geo.Lamps ??= new List<float>()
+                     : kind == MapPointKind.Pole ? geo.Poles ??= new List<float>()
+                     : geo.Pylons ??= new List<float>();
+            ChunkBuilder.Write(list, new Transform3D(new Basis(Vector3.Up, yaw), new Vector3(p.X, y, p.Z)), new Color(1, 1, 1));
+            if (collide) (geo.Posts ??= new List<Vector4>()).Add(new Vector4(p.X, y, p.Z, kind == MapPointKind.Pylon ? 0.45f : 0.12f));
+        }
+    }
+
+    /// <summary>Lamp post, built once and instanced. Local +Z is the side the arm reaches out to.</summary>
+    public static ArrayMesh LampMesh(Material m)
+    {
+        var d = new MeshData();
+        var steel = new Color(0.20f, 0.21f, 0.22f);
+        d.Box(new Vector3(-0.07f, -0.3f, -0.07f), new Vector3(0.07f, 8.2f, 0.07f), steel);
+        d.Box(new Vector3(-0.045f, 8.1f, -0.05f), new Vector3(0.045f, 8.2f, 1.9f), steel);
+        d.Box(new Vector3(-0.16f, 7.98f, 1.35f), new Vector3(0.16f, 8.1f, 2.0f), new Color(0.32f, 0.33f, 0.33f));
+        return d.ToMesh(m);
+    }
+
+    public static ArrayMesh PoleMesh(Material m)
+    {
+        var d = new MeshData();
+        var wood = new Color(0.16f, 0.12f, 0.09f);
+        d.Box(new Vector3(-0.1f, -0.3f, -0.1f), new Vector3(0.1f, 8.6f, 0.1f), wood);
+        d.Box(new Vector3(-0.95f, 7.5f, -0.05f), new Vector3(0.95f, 7.62f, 0.05f), wood);
+        return d.ToMesh(m);
+    }
+
+    public static ArrayMesh PylonMesh(Material m)
+    {
+        var d = new MeshData();
+        var steel = new Color(0.30f, 0.31f, 0.32f);
+        // four splayed legs meeting in a mast, three cross arms
+        foreach (var (sx, sz) in new[] { (-1f, -1f), (1f, -1f), (1f, 1f), (-1f, 1f) })
+            d.Box(new Vector3(sx * 1.9f - 0.12f, -0.4f, sz * 1.9f - 0.12f), new Vector3(sx * 1.9f + 0.12f, 12f, sz * 1.9f + 0.12f), steel);
+        d.Box(new Vector3(-2.0f, 11.8f, -2.0f), new Vector3(2.0f, 12.1f, 2.0f), steel);
+        d.Box(new Vector3(-0.45f, 12f, -0.45f), new Vector3(0.45f, 31f, 0.45f), steel);
+        d.Box(new Vector3(-6.5f, 21f, -0.14f), new Vector3(6.5f, 21.3f, 0.14f), steel);
+        d.Box(new Vector3(-5.0f, 25.5f, -0.14f), new Vector3(5.0f, 25.8f, 0.14f), steel);
+        d.Box(new Vector3(-3.2f, 29.8f, -0.14f), new Vector3(3.2f, 30.1f, 0.14f), steel);
+        return d.ToMesh(m);
+    }
+
     // ---- buildings -----------------------------------------------------------------------
+
+    private static readonly Color[] CanopyBands =
+    {
+        new(0.55f, 0.09f, 0.07f), new(0.08f, 0.22f, 0.45f), new(0.10f, 0.36f, 0.16f), new(0.62f, 0.45f, 0.06f), new(0.42f, 0.42f, 0.40f),
+    };
+
+    /// <summary>A roof on posts: fuel station canopy, carport, platform shelter. Open underneath, so cars drive in.</summary>
+    private static void AddCanopy(MeshData mesh, List<Vector3>? collision, MapBuilding b, float offX, float offZ, float gMin, float gMax, uint seed)
+    {
+        var rng = new Rng(seed);
+        float top = gMax + MathF.Max(3.2f, b.Height), under = top - 0.4f;
+        var band = rng.Pick(CanopyBands);
+        var fascia = new Color(band.R, band.G, band.B, KindPlain);
+        var deck = new Color(0.50f, 0.50f, 0.48f, KindFlatRoof);
+        var soffit = new Color(0.55f, 0.55f, 0.53f, KindPlain);
+        var rx = b.RX[0]; var rz = b.RZ[0];
+        int n = rx.Length;
+        for (int i = 0; i < n; i++)
+        {
+            int j = (i + 1) % n;
+            float ax = offX + rx[i], az = offZ + rz[i], bx = offX + rx[j], bz = offZ + rz[j];
+            float dx = bx - ax, dz = bz - az;
+            float len = MathF.Sqrt(dx * dx + dz * dz);
+            if (len < 0.02f) continue;
+            var nrm = new Vector3(dz / len, 0, -dx / len);
+            int v = mesh.V.Count;
+            mesh.Add(new Vector3(ax, under, az), nrm, new Vector2(0, 0), Vector2.Zero, fascia);
+            mesh.Add(new Vector3(bx, under, bz), nrm, new Vector2(len, 0), Vector2.Zero, fascia);
+            mesh.Add(new Vector3(bx, top, bz), nrm, new Vector2(len, 0.4f), Vector2.Zero, fascia);
+            mesh.Add(new Vector3(ax, top, az), nrm, new Vector2(0, 0.4f), Vector2.Zero, fascia);
+            mesh.Quad(v, v + 1, v + 2, v + 3, nrm);
+        }
+        var tris = _earScratch ??= new List<int>();
+        tris.Clear();
+        Triangulate(rx, rz, tris);
+        foreach (var (y, facing, col, solid) in new[] { (top, Vector3.Up, deck, true), (under, Vector3.Down, soffit, false) })
+        {
+            int baseV = mesh.V.Count;
+            for (int i = 0; i < n; i++)
+                mesh.Add(new Vector3(offX + rx[i], y, offZ + rz[i]), facing, new Vector2(rx[i], rz[i]), Vector2.Zero, col);
+            for (int i = 0; i + 2 < tris.Count; i += 3)
+                mesh.Tri(baseV + tris[i], baseV + tris[i + 1], baseV + tris[i + 2], facing, solid ? collision : null);
+        }
+        // posts at up to six corners, pulled in from the edge
+        var post = new Color(0.42f, 0.42f, 0.41f, KindPlain);
+        int step = Math.Max(1, (n + 5) / 6);
+        for (int i = 0; i < n; i += step)
+        {
+            float px = offX + rx[i] + (b.Cx - rx[i]) * 0.14f, pz = offZ + rz[i] + (b.Cz - rz[i]) * 0.14f;
+            mesh.Box(new Vector3(px - 0.16f, gMin - 0.4f, pz - 0.16f), new Vector3(px + 0.16f, under, pz + 0.16f), post, collision);
+        }
+    }
 
     // Vertex colour alpha selects the surface in shaders/building.gdshader.
     private const float KindWindows = 1f, KindPlain = 0.66f, KindTiles = 0.33f, KindFlatRoof = 0f;
@@ -319,6 +500,7 @@ public static class MapMesher
     /// </summary>
     public static void AddBuilding(MeshData mesh, List<Vector3>? collision, MapBuilding b, float offX, float offZ, float gMin, float gMax, uint seed)
     {
+        if (b.IsCanopy) { AddCanopy(mesh, collision, b, offX, offZ, gMin, gMax, seed); return; }
         Palette(b.Type, seed, out var wall, out var roofCol, out float wallKind);
         if (b.Height < 3.4f || b.IsPart && b.Height - b.MinHeight < 3f) wallKind = KindPlain;
         float floor = gMax;

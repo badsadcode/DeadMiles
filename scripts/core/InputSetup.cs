@@ -35,6 +35,7 @@ public static class InputSetup
         new("horn", "Drive: horn", Key.H),
         new("camera_toggle", "Drive: change camera", Key.C),
         new("recover", "Drive: recover car", Key.R),
+        new("map", "Map (real-map world)", Key.M),
         new("quicksave", "Quick save", Key.F5),
         new("pause", "Pause", Key.Escape, false),
     };

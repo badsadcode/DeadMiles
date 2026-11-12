@@ -29,11 +29,13 @@ public partial class GameWorld : Node3D
     public Hud Hud = null!;
     public InventoryUi InventoryUi = null!;
     public PauseMenu Pause = null!;
+    /// <summary>The road atlas; only exists in the real-map world.</summary>
+    public MapScreen? MapView;
     public PostFx PostFx = null!;
     public AudioDirector Audio => Main.I.Audio;
 
     public bool IsReady { get; private set; }
-    public bool UiOpen => !IsReady || _sleeping || InventoryUi.Visible || Pause.Visible || Player.Stats.Dead;
+    public bool UiOpen => !IsReady || _sleeping || InventoryUi.Visible || Pause.Visible || Player.Stats.Dead || MapView is { Visible: true };
 
     private readonly Dictionary<string, Inventory> _containers = new();
     private bool _sleeping, _sheltered;
@@ -75,6 +77,12 @@ public partial class GameWorld : Node3D
         InventoryUi = new InventoryUi { Name = "Inventory" };
         layer.AddChild(InventoryUi);
         InventoryUi.Setup(this);
+        if (World.Map != null)
+        {
+            MapView = new MapScreen { Name = "Map" };
+            layer.AddChild(MapView);
+            MapView.Setup(this, World.Map);
+        }
         Pause = new PauseMenu { Name = "Pause" };
         layer.AddChild(Pause);
         Pause.Setup(this);
@@ -135,7 +143,7 @@ public partial class GameWorld : Node3D
         var place = map.NearestPlace(pp.X, pp.Z, 6000f);
         _intro.Enqueue((2.5, place != null ? $"{place.Name}. Your supplies are in the trunk." : "Your supplies are in the trunk."));
         _intro.Enqueue((10, $"[{InputSetup.KeyName("interact")}] to get in the car. The trunk is at the back."));
-        _intro.Enqueue((26, "Fuel is low. Fuel stations and shops are where the map says they are."));
+        _intro.Enqueue((26, $"Fuel is low. [{InputSetup.KeyName("map")}] opens the map; fuel stations are marked in orange."));
     }
 
     private void PlaceNewGame()
@@ -280,7 +288,13 @@ public partial class GameWorld : Node3D
     public override void _UnhandledInput(InputEvent e)
     {
         if (!IsReady || Player.Stats.Dead || _sleeping) return;
-        if (e.IsActionPressed("pause"))
+        if (e.IsActionPressed("map") && MapView != null && !InventoryUi.Visible && !Pause.Visible)
+        {
+            MapView.Toggle();
+            GetViewport().SetInputAsHandled();
+        }
+        else if (MapView is { Visible: true }) return;   // the map handles its own keys
+        else if (e.IsActionPressed("pause"))
         {
             if (InventoryUi.Visible) InventoryUi.Close(); else Pause.Open();
             GetViewport().SetInputAsHandled();
