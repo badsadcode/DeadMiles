@@ -167,7 +167,8 @@ wall after ~150 m. It proves the surface is drivable, not that a route can be fo
   line so water always sits in a channel.
 - **Decision (Tom, 12 Nov): start a new repository that mixes both worlds** — Thornwake's world
   machinery and water with this project's OSM importer, tile format, roads, buildings, routing
-  and map screen. Dead Miles stays as the experiment it was. Nothing has been created yet.
+  and map screen. Dead Miles stays as the experiment it was. Working name: **Baltic Drive**
+  (Tom's pick). Nothing has been created yet.
 - **Tile editor** as a Godot editor tool, storing overrides per tile (replace building N with a
   model, add props, mark bus stops / depots) so the generated map can be re-imported without
   losing edits.
