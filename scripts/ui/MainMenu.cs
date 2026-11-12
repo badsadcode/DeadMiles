@@ -40,7 +40,7 @@ public partial class MainMenu : Control
         cont.Disabled = !SaveService.Exists();
         cont.SizeFlagsHorizontal = SizeFlags.ShrinkBegin;
         _buttons.AddChild(cont);
-        _buttons.AddChild(Shrink(Ui.Button("New Game", () => { _newGame.Visible = true; if (!MapChosen) _seed.GrabFocus(); }, 320)));
+        _buttons.AddChild(Shrink(Ui.Button("New Game", ShowNewGame, 320)));
         _buttons.AddChild(Shrink(Ui.Button("Settings", () => { _settings.Visible = true; }, 320)));
         _buttons.AddChild(Shrink(Ui.Button("Quit", () => GetTree().Quit(), 320)));
 
@@ -49,6 +49,16 @@ public partial class MainMenu : Control
         foot.Position = new Vector2(90, -46);
         foot.GrowVertical = GrowDirection.Begin;
         AddChild(foot);
+
+        if (MapData.Exists(MapWorld.DefaultMap))
+        {
+            // Required by the map data's licence (ODbL): credit where the player can see it.
+            var credit = Ui.Label("Map data \u00a9 OpenStreetMap contributors", 13, new Color(1, 1, 1, 0.45f));
+            credit.SetAnchorsAndOffsetsPreset(LayoutPreset.BottomRight);
+            credit.Position = new Vector2(-360, -46);
+            credit.GrowVertical = GrowDirection.Begin;
+            AddChild(credit);
+        }
 
         _newGame = new PanelContainer { Visible = false };
         Center(_newGame);
@@ -109,6 +119,13 @@ public partial class MainMenu : Control
         c.SetAnchorsAndOffsetsPreset(LayoutPreset.Center);
         c.GrowHorizontal = GrowDirection.Both;
         c.GrowVertical = GrowDirection.Both;
+    }
+
+    /// <summary>Opens the New Game panel (also used by the automated menu test).</summary>
+    public void ShowNewGame()
+    {
+        _newGame.Visible = true;
+        if (!MapChosen) _seed.GrabFocus();
     }
 
     private bool MapChosen => _world != null && _world.Selected == 0 && _starts.Count > 0;

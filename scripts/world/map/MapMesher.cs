@@ -309,6 +309,7 @@ public static class MapMesher
                 wall = rng.Pick(BlockWalls); roof = rng.Chance(0.4f) ? rng.Pick(PitchedRoofs) : new Color(0.13f, 0.13f, 0.14f);
                 wallKind = KindWindows; break;
         }
+        shade *= 0.82f;   // keep facades from glowing against the dark ground palette
         wall = new Color(wall.R * shade, wall.G * shade, wall.B * shade);
     }
 

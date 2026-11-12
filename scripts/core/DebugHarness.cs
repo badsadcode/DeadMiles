@@ -19,6 +19,7 @@ public partial class DebugHarness : Node
     private int _shotIndex;
     private string _map = "";
     private string _place = "";
+    private string _views = "";
     private float _startX, _startZ;
 
     public static DebugHarness? TryCreate()
@@ -37,6 +38,7 @@ public partial class DebugHarness : Node
         foreach (var arg in OS.GetCmdlineUserArgs())
         {
             if (arg.StartsWith("--map=")) h._map = arg["--map=".Length..];
+            else if (arg.StartsWith("--views=")) h._views = arg["--views=".Length..];
             else if (arg.StartsWith("--place=")) h._place = arg["--place=".Length..];
             else if (arg.StartsWith("--start="))
             {
@@ -118,6 +120,7 @@ public partial class DebugHarness : Node
                     case "mapstart": await TestMapStart(); break;
                     case "mapair": await TestMapAir(); break;
                     case "mapdrive": await TestMapDrive(); break;
+                    case "mapviews": await TestMapViews(); break;
                     default: Report($"ERROR: unknown test '{test}'"); break;
                 }
             }
@@ -194,6 +197,36 @@ public partial class DebugHarness : Node
         g.Player.SetPhysicsProcess(true);
     }
 
+    /// <summary>
+    /// Free camera shots: --views=x:z:height:yawDeg:pitchDeg;...  (yaw 0 looks north, 90 looks west).
+    /// The world streams around each viewpoint before the picture is taken.
+    /// </summary>
+    private async Task TestMapViews()
+    {
+        await EnsureGame();
+        var g = GameWorld.I;
+        g.Weather.Force(WeatherState.Clear, true);
+        g.Time.TimeOfDay = 11.5f;
+        if (g.Player.InVehicle) g.Player.ExitVehicle();
+        g.Player.SetPhysicsProcess(false);
+        var inv = System.Globalization.CultureInfo.InvariantCulture;
+        int n = 0;
+        foreach (string view in _views.Split(';', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var f = view.Split(':');
+            if (f.Length != 5) { Report($"ERROR: bad view '{view}'"); continue; }
+            float x = float.Parse(f[0], inv), z = float.Parse(f[1], inv), height = float.Parse(f[2], inv);
+            g.Player.GlobalPosition = new Vector3(x, g.World.Height(x, z) + height, z);
+            g.Player.SetLook(Mathf.DegToRad(float.Parse(f[3], inv)), Mathf.DegToRad(float.Parse(f[4], inv)));
+            double t = 0;
+            await Wait(1.0);
+            while (g.Streamer.PendingJobs > 0 && t < 40) { await Wait(0.5); t += 0.5; }
+            await Wait(4.0);
+            await Shot($"view{n++}");
+        }
+        g.Player.SetPhysicsProcess(true);
+    }
+
     private async Task TestMapDrive()
     {
         await EnsureGame();
@@ -247,6 +280,13 @@ public partial class DebugHarness : Node
         Main.I.ShowMenu();
         await Wait(1.5);
         await Shot("menu");
+        foreach (var child in Main.I.GetChildren())
+        {
+            if (child is not MainMenu menu) continue;
+            menu.ShowNewGame();
+            await Wait(0.5);
+            await Shot("menu_new_game");
+        }
     }
 
     private async Task TestStart()

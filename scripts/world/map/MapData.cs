@@ -301,8 +301,11 @@ public sealed class MapTile
             float hills = _map.Hills.Fbm(wx / 240f, wz / 240f, 2) * 0.5f + 0.5f;
             h += amp * (n * 11f + hills * 2.4f);
         }
-        float water = LandBlend(lx, lz, MapWorld.WaterLut);
-        if (water > 0f) h = Mathf.Lerp(h, WorldGenerator.WaterLevel - 1.6f, MathX.Smooth(0.2f, 0.8f, water));
+        // Four spread taps round off the 4 m raster steps into a soft shoreline.
+        const float r = 3f;
+        float water = (LandBlend(lx - r, lz - r, MapWorld.WaterLut) + LandBlend(lx + r, lz - r, MapWorld.WaterLut)
+                     + LandBlend(lx - r, lz + r, MapWorld.WaterLut) + LandBlend(lx + r, lz + r, MapWorld.WaterLut)) * 0.25f;
+        if (water > 0f) h = Mathf.Lerp(h, WorldGenerator.WaterLevel - 1.6f, MathX.Smooth(0.25f, 0.75f, water));
         return h;
     }
 }
