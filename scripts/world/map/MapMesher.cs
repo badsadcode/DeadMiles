@@ -107,16 +107,28 @@ public static class MapMesher
         RoadClass.Living => 0.06f, RoadClass.Service => 0.055f, RoadClass.Track => 0.05f, _ => 0.04f,
     };
 
+    /// <summary>
+    /// Marking style for the shader: 0 none, 0.33 centre dashes only (minor through roads),
+    /// 0.66 two-way with edge lines, 1 one-way carriageway with edge lines.
+    /// </summary>
     private static float Marking(MapRoad r)
     {
         if (r.Unpaved || r.IsRail) return 0f;
-        return r.Cls switch
+        bool oneway = r.Oneway;
+        switch (r.Cls)
         {
-            RoadClass.Motorway or RoadClass.Trunk => (r.Flags & RoadFlag.Oneway) != 0 ? 1f : 0.66f,
-            RoadClass.Primary or RoadClass.Secondary => (r.Flags & RoadFlag.Oneway) != 0 && r.HalfWidth > 3.2f ? 1f : 0.66f,
-            RoadClass.Tertiary => 0.33f,
-            _ => 0f,
-        };
+            case RoadClass.Motorway: case RoadClass.Trunk: case RoadClass.Primary: case RoadClass.Secondary:
+                return oneway ? 1f : 0.66f;
+            case RoadClass.Tertiary:
+                return oneway ? (r.Lanes >= 2 ? 1f : 0f) : 0.33f;
+            case RoadClass.Link:
+                return oneway ? 1f : 0.33f;
+            case RoadClass.Unclassified: case RoadClass.Residential:
+                // only streets wide enough to really have marked lanes
+                return r.Lanes >= 3 ? (oneway ? 1f : 0.66f) : 0f;
+            default:
+                return 0f;
+        }
     }
 
     public static void Build(MapContext ctx, float size, int lod, MapChunkGeometry geo, bool collide)
@@ -189,8 +201,11 @@ public static class MapMesher
         bool bridge = road.IsBridge;
         bool loose = road.Unpaved || road.IsRail;
         float surf = road.IsRail ? SurfRail : road.Unpaved ? SurfLoose : SurfAsphalt;
-        var col = new Color(surf, Marking(road), road.HalfWidth / 16f, 1f);
-        float bias = ClassBias(road.Cls) + (lod > 0 ? 0.06f * lod : 0f);
+        var col = new Color(surf, Marking(road), road.HalfWidth / 16f, road.Lanes / 8f);
+        // A hair of extra height that differs from road to road: where two roads of the same class
+        // overlap at a junction their surfaces would otherwise be exactly coplanar and flicker.
+        float jitter = (Hash.Of((int)(road.Along[0] * 7f), (int)(road.X[0] * 10f), (int)(road.Z[0] * 10f)) & 7) * 0.0012f;
+        float bias = ClassBias(road.Cls) + jitter + (lod > 0 ? 0.06f * lod : 0f);
         float hw = road.HalfWidth;
         float outer = bridge ? hw + 0.35f : hw + ShoulderWidth;
         float drop = bridge ? 0f : ShoulderDrop;
@@ -215,7 +230,7 @@ public static class MapMesher
                 var n = i == 0 ? (up - new Vector3(m.X, 0, m.Y) * 0.28f).Normalized()
                       : i == 3 ? (up + new Vector3(m.X, 0, m.Y) * 0.28f).Normalized() : up;
                 mesh.Add(new Vector3(p.X + m.X * off[i], y + dy[i], p.Y + m.Y * off[i]), bridge ? up : n,
-                    new Vector2(off[i], along), Vector2.Zero, col);
+                    new Vector2(off[i], along), new Vector2(road.Clear[k + e], road.JunctionAhead[k + e]), col);
             }
         }
         for (int i = 0; i < 3; i++)
@@ -235,7 +250,9 @@ public static class MapMesher
     private static void AddCap(MeshData mesh, Vector2 p, Vector2 outward, float y, float hw, float along, Color col, List<Vector3>? collision, bool withSkirt)
     {
         var side = new Vector2(-outward.Y, outward.X);
-        int centre = mesh.Add(new Vector3(p.X, y, p.Y), Vector3.Up, new Vector2(0, along), Vector2.Zero, col);
+        // road ends carry no paint: UV2.x below zero switches the markings off in the shader
+        var blank = new Vector2(-10f, 0f);
+        int centre = mesh.Add(new Vector3(p.X, y, p.Y), Vector3.Up, new Vector2(0, along), blank, col);
         const int steps = 6;
         int prev = -1;
         for (int i = 0; i <= steps; i++)
@@ -243,7 +260,7 @@ public static class MapMesher
             float a = Mathf.Pi * i / steps;
             float c = MathF.Cos(a), sn = MathF.Sin(a);
             var q = p + side * (c * hw) + outward * (sn * hw);
-            int v = mesh.Add(new Vector3(q.X, y, q.Y), Vector3.Up, new Vector2(c * hw * 0.98f, along + sn * hw), Vector2.Zero, col);
+            int v = mesh.Add(new Vector3(q.X, y, q.Y), Vector3.Up, new Vector2(c * hw * 0.98f, along + sn * hw), blank, col);
             if (prev >= 0) mesh.Tri(centre, prev, v, Vector3.Up, collision);
             prev = v;
         }
@@ -258,8 +275,8 @@ public static class MapMesher
             var radial = side * c + outward * sn;
             var n = (Vector3.Up + new Vector3(radial.X, 0, radial.Y) * 0.28f).Normalized();
             var qi = p + radial * hw; var qo = p + radial * skirt;
-            int vi = mesh.Add(new Vector3(qi.X, y, qi.Y), n, new Vector2(c * hw, along + sn * hw), Vector2.Zero, col);
-            int vo = mesh.Add(new Vector3(qo.X, y - ShoulderDrop, qo.Y), n, new Vector2(c * skirt, along + sn * skirt), Vector2.Zero, col);
+            int vi = mesh.Add(new Vector3(qi.X, y, qi.Y), n, new Vector2(c * hw, along + sn * hw), blank, col);
+            int vo = mesh.Add(new Vector3(qo.X, y - ShoulderDrop, qo.Y), n, new Vector2(c * skirt, along + sn * skirt), blank, col);
             if (prevIn >= 0) mesh.Quad(prevIn, prevOut, vo, vi, Vector3.Up, collision);
             prevIn = vi; prevOut = vo;
         }

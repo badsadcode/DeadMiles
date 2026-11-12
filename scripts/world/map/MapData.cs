@@ -60,6 +60,16 @@ public sealed class MapRoad
     public float[] Lift = null!;
     /// <summary>Distance along the whole road at each point, for lane markings.</summary>
     public float[] Along = null!;
+    /// <summary>
+    /// Metres from each point to the edge of the nearest junction, measured along the road
+    /// (negative inside the junction). Lane markings stop where this reaches zero.
+    /// </summary>
+    public float[] Clear = null!;
+    /// <summary>+1 where that junction lies ahead (towards later points), -1 where it lies behind.</summary>
+    public float[] JunctionAhead = null!;
+    /// <summary>Lanes across the whole carriageway, estimated from its width.</summary>
+    public int Lanes => Math.Clamp((int)MathF.Floor((HalfWidth * 2f - 0.6f) / 3.3f + 0.35f), 1, 8);
+    public bool Oneway => (Flags & RoadFlag.Oneway) != 0;
 
     public bool IsBridge => (Flags & RoadFlag.Bridge) != 0 && (Flags & RoadFlag.Tunnel) == 0;
     public bool IsRail => (Flags & RoadFlag.Rail) != 0;
@@ -208,6 +218,7 @@ public sealed class MapTile
                     MathF.Max(road.X[k], road.X[k + 1]), MathF.Max(road.Z[k], road.Z[k + 1]), (index << 12) | k);
         }
         Roads = roads.ToArray();
+        FindJunctions();
 
         int nBuildings = (int)r.ReadUInt32();
         Buildings = new MapBuilding[nBuildings];
@@ -265,6 +276,54 @@ public sealed class MapTile
             PointKind[i] = r.ReadByte();
             PointX[i] = r.ReadUInt16() * 0.1f; PointZ[i] = r.ReadUInt16() * 0.1f;
             Bucket(_pointCells, PointX[i], PointZ[i], PointX[i], PointZ[i], i);
+        }
+    }
+
+    /// <summary>
+    /// Works out where roads meet, so markings can stop short of junctions. A junction is a point
+    /// where three or more road arms come together; driveways and field tracks do not count, and
+    /// neither does a road that simply continues under another name.
+    /// </summary>
+    private void FindJunctions()
+    {
+        static bool Counts(MapRoad r) => r.Drivable && r.Cls != RoadClass.Service && r.Cls != RoadClass.Track;
+        static long Key(float x, float z) => ((long)MathF.Round(x * 10f) << 32) ^ ((long)MathF.Round(z * 10f) & 0xffffffffL);
+        var arms = new Dictionary<long, (int count, float reach)>();
+        foreach (var r in Roads)
+        {
+            if (!Counts(r)) continue;
+            int n = r.X.Length;
+            for (int k = 0; k < n; k++)
+            {
+                long key = Key(r.X[k], r.Z[k]);
+                arms.TryGetValue(key, out var a);
+                a.count += k == 0 || k == n - 1 ? 1 : 2;
+                a.reach = MathF.Max(a.reach, r.HalfWidth);
+                arms[key] = a;
+            }
+        }
+        foreach (var r in Roads)
+        {
+            int n = r.X.Length;
+            r.Clear = new float[n];
+            r.JunctionAhead = new float[n];
+            Array.Fill(r.Clear, 1000f);
+            if (!Counts(r)) continue;
+            // sweep forwards (junction behind), then backwards (junction ahead), keeping the nearer
+            float since = float.MaxValue;
+            for (int k = 0; k < n; k++)
+            {
+                if (k > 0 && since < float.MaxValue) since += r.Along[k] - r.Along[k - 1];
+                if (arms.TryGetValue(Key(r.X[k], r.Z[k]), out var a) && a.count >= 3) since = -(a.reach + 1.2f);
+                if (since < r.Clear[k]) { r.Clear[k] = since; r.JunctionAhead[k] = -1f; }
+            }
+            since = float.MaxValue;
+            for (int k = n - 1; k >= 0; k--)
+            {
+                if (k < n - 1 && since < float.MaxValue) since += r.Along[k + 1] - r.Along[k];
+                if (arms.TryGetValue(Key(r.X[k], r.Z[k]), out var a) && a.count >= 3) since = -(a.reach + 1.2f);
+                if (since < r.Clear[k]) { r.Clear[k] = since; r.JunctionAhead[k] = 1f; }
+            }
         }
     }
 

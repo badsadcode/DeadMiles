@@ -4,7 +4,8 @@ render_mode cull_back, diffuse_burley;
 // Roads of the real-map world. One mesh carries every road in a chunk, so the per-road
 // properties travel in the vertex colour:
 //   R = surface (0 asphalt, 0.25 concrete, 0.5 gravel/dirt, 0.75 bare steel, 1 railway)
-//   G = markings (0 none, 0.33 centre dashes, 0.66 centre dashes + edge lines, 1 one-way lanes)
+//   G = markings (0 none, 0.33 two-way centre line only, 0.66 two-way with edge lines, 1 one-way lanes)
+//   A = lane count / 8
 //   B = half width / 16
 // UV.x = lateral offset in metres from the centre line, UV.y = distance along the road.
 
@@ -53,17 +54,38 @@ void fragment() {
 	float crack = smoothstep(0.035, 0.0, abs(vnoise(vec2(u * 1.3, v * 0.45)) - 0.5)) * fade;
 	asphalt *= 1.0 - 0.55 * crack * step(0.55, vnoise(vec2(v * 0.02, 3.0)));
 
+	// ---- paint ----
+	// UV2.x = metres to the edge of the nearest junction (negative inside it), UV2.y = +1 when that
+	// junction is ahead in the direction of increasing v. COLOR.a = lane count / 8.
 	float wear = smoothstep(0.25, 0.75, vnoise(vec2(u * 2.0, v * 0.35)) + 0.25 * vnoise(vec2(u * 9.0, v * 3.0)));
+	float clear = UV2.x;
+	float open_road = smoothstep(0.0, 1.2, clear);          // markings fade out before a junction
 	float dash = step(fract(v / 9.0), 0.42);
-	float centre = smoothstep(0.085, 0.06, au) * dash * step(0.2, mark) * step(mark, 0.8);
-	float edge = smoothstep(0.075, 0.05, abs(au - (half_width - 0.3))) * step(0.5, mark);
-	// one-way carriageways: dashes between lanes instead of a centre line
-	float lanes = max(1.0, floor(half_width * 2.0 / 3.4 + 0.3));
+	float lanes = max(1.0, floor(COLOR.a * 8.0 + 0.5));
+	float one_way = step(0.9, mark);
+	float two_way = step(0.2, mark) * (1.0 - one_way);
+	float has_edges = step(0.5, mark);
 	float lw = half_width * 2.0 / lanes;
+
+	// lane dividers: dashes on every boundary between lanes
 	float fu = fract((u + half_width) / lw);
 	float lane_d = min(fu, 1.0 - fu) * lw;
-	float lane = smoothstep(0.085, 0.06, lane_d) * dash * step(0.9, mark) * step(au, half_width - 1.0);
-	float paint = max(max(centre, edge), lane) * mix(0.25, 0.95, wear);
+	float inner = step(au, half_width - 1.0);
+	float lane = smoothstep(0.085, 0.06, lane_d) * dash * inner * step(1.5, lanes);
+	// two-way roads: the middle boundary is the centre line (double and solid on four lanes or more),
+	// and an odd lane count leaves the centre line alone in the middle
+	float is_centre = smoothstep(0.5, 0.3, au);
+	float even = 1.0 - mod(lanes, 2.0);
+	float centre_dash = smoothstep(0.085, 0.06, au) * dash;
+	float centre_double = smoothstep(0.05, 0.03, abs(au - 0.11)) * step(3.5, lanes);
+	float centre = mix(centre_dash, centre_double, step(3.5, lanes));
+	float lane_two_way = lane * (1.0 - is_centre) * even * step(3.5, lanes);
+	float marks = one_way * lane + two_way * max(centre, lane_two_way);
+	float edge = smoothstep(0.075, 0.05, abs(au - (half_width - 0.3))) * has_edges;
+	// stop line across the approaching lanes, just before the junction
+	float approach = mix(step(0.0, u * UV2.y), step(0.0, UV2.y), one_way);
+	float stop_line = smoothstep(0.22, 0.18, abs(clear - 0.75)) * approach * step(au, half_width - 0.3) * step(0.2, mark) * step(clear, 30.0);
+	float paint = max(max(marks, edge) * open_road, stop_line) * mix(0.25, 0.95, wear);
 	vec3 col = mix(asphalt, vec3(0.42, 0.40, 0.34), paint);
 
 	// ---- gravel / dirt track: two worn ruts and a rougher crown ----
