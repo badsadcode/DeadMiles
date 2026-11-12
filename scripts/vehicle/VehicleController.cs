@@ -384,8 +384,18 @@ public partial class VehicleController : VehicleBody3D, IInteractable, IDamageab
         float yaw;
         if (toRoad)
         {
-            p = g.World.Road.PointAt(p.Z, 1.9f);
-            yaw = g.World.Road.YawAt(p.Z);
+            if (g.World.Map != null)
+            {
+                var ahead = -GlobalTransform.Basis.Z;
+                yaw = MathF.Atan2(-ahead.X, -ahead.Z);
+                if (g.World.Map.NearestRoad(p.X, p.Z, 400f, 1.6f, out var onRoad, out float roadYaw)) { p = onRoad; yaw = roadYaw; }
+                else p.Y = g.World.Height(p.X, p.Z);
+            }
+            else
+            {
+                p = g.World.Road.PointAt(p.Z, 1.9f);
+                yaw = g.World.Road.YawAt(p.Z);
+            }
             g.Toast("You drag the car back onto the road.");
         }
         else

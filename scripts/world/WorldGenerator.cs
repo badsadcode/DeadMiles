@@ -16,19 +16,22 @@ public sealed class WorldGenerator
     public readonly int Seed;
     public readonly RoadNetwork Road;
     public readonly PoiPlacer Pois;
+    /// <summary>Set when the world is a real map rather than generated terrain; every query below defers to it.</summary>
+    public readonly MapWorld? Map;
 
     private readonly Noise2 _macro, _hills, _biome, _variety;
 
-    public WorldGenerator(int seed)
+    public WorldGenerator(int seed, MapWorld? map = null)
     {
         Seed = seed;
+        Map = map;
         _macro = new Noise2(seed);
         _hills = new Noise2(seed + 101);
         _biome = new Noise2(seed + 202);
         _variety = new Noise2(seed + 303);
         Road = new RoadNetwork(this, seed);
         Pois = new PoiPlacer(this, seed);
-        Log.Info("WorldGenerator", $"World ready for seed {seed}");
+        Log.Info("WorldGenerator", map == null ? $"World ready for seed {seed}" : $"World ready for map '{map.Data.Name}'");
     }
 
     /// <summary>Large scale landform only. The road follows a smoothed version of this.</summary>
@@ -51,6 +54,7 @@ public sealed class WorldGenerator
     /// <summary>forest: 0..1 tree cover, field: 0..1 cultivated land.</summary>
     public void Biome(float x, float z, out float forest, out float field)
     {
+        if (Map != null) { Map.Biome(x, z, out forest, out field); return; }
         float b = _biome.Fbm(x / 430f, z / 430f, 2);
         forest = MathX.Smooth(-0.04f, 0.2f, b);
         field = MathX.Smooth(0.26f, 0.38f, -b);
@@ -61,6 +65,7 @@ public sealed class WorldGenerator
 
     public float Height(float x, float z)
     {
+        if (Map != null) return Map.Height(x, z);
         var rs = Road.Sample(z);
         return Compose(x, z, rs, Pois.Near(z), 0f, out _);
     }
@@ -73,6 +78,7 @@ public sealed class WorldGenerator
     /// <param name="dirt">0..1 bare-earth/gravel mask for the terrain shader.</param>
     public float Compose(float x, float z, in RoadSample rs, PoiDesc[] pois, float depress, out float dirt)
     {
+        if (Map != null) return Map.Height(x, z, depress, out dirt);
         float h = BaseHeight(x, z);
         float d = MathF.Abs(x - rs.X) * rs.InvLen;
         dirt = 0f;
@@ -135,6 +141,7 @@ public sealed class WorldGenerator
     /// <summary>True when nothing man-made (road, track, pad) is within <paramref name="margin"/> metres.</summary>
     public bool IsWild(float x, float z, in RoadSample rs, PoiDesc[] pois, float margin)
     {
+        if (Map != null) return Map.IsWild(x, z, margin);
         if (MathF.Abs(x - rs.X) * rs.InvLen < RoadNetwork.ShoulderHalfWidth + margin) return false;
         for (int i = 0; i < pois.Length; i++)
         {

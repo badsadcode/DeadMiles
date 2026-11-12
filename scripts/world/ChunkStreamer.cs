@@ -36,6 +36,10 @@ public partial class ChunkStreamer : Node3D
     private VegetationLibrary _veg = null!;
     private PoiBuilder _poiBuilder = null!;
     private ShaderMaterial _terrainMat = null!, _roadMat = null!, _waterMat = null!;
+    private ShaderMaterial? _mapRoadMat, _buildingMat;
+    private MapPlaces? _mapPlaces;
+    private MapSkyline? _skyline;
+    private double _trimTimer = 5;
     private StandardMaterial3D _poleMat = null!, _wireMat = null!;
 
     private readonly Dictionary<Vector2I, Chunk> _chunks = new();
@@ -64,6 +68,15 @@ public partial class ChunkStreamer : Node3D
         AddChild(_roadRoot = new Node3D { Name = "Road" });
         AddChild(_poiRoot = new Node3D { Name = "Pois" });
         AddChild(_grassRoot = new Node3D { Name = "Grass" });
+        if (world.Map != null)
+        {
+            _mapRoadMat = new ShaderMaterial { Shader = GD.Load<Shader>("res://shaders/map_road.gdshader") };
+            _buildingMat = new ShaderMaterial { Shader = GD.Load<Shader>("res://shaders/building.gdshader") };
+            _mapPlaces = new MapPlaces(world.Map, poiBuilder, _poiRoot);
+            var sky = new Node3D { Name = "Skyline" };
+            AddChild(sky);
+            _skyline = new MapSkyline(world.Map, sky, _buildingMat);
+        }
     }
 
     public IEnumerable<(PoiDesc desc, Node3D node)> ActivePois => _pois.Values;
@@ -84,13 +97,23 @@ public partial class ChunkStreamer : Node3D
         var fp = Focus.GlobalPosition;
         UpdateChunks(fp);
         ApplyFinished(fp);
-        UpdateRoad(fp);
+        if (_world.Map == null) UpdateRoad(fp);
         if (GrassEnabled) UpdateGrass(fp);
         _slowTimer -= delta;
         if (_slowTimer <= 0)
         {
             _slowTimer = 0.5;
-            UpdatePois(fp);
+            if (_world.Map == null) UpdatePois(fp);
+            else
+            {
+                _mapPlaces!.Update(fp);
+                _skyline!.Update(fp);
+            }
+        }
+        if (_world.Map != null && (_trimTimer -= delta) <= 0)
+        {
+            _trimTimer = 5;
+            _world.Map.Data.Trim(fp.X, fp.Z, 3);
         }
     }
 
@@ -214,6 +237,8 @@ public partial class ChunkStreamer : Node3D
         if (b.ImpostorBuffer != null)
             node.AddChild(MakeMultiMesh(_veg.ImpostorDeciduous, b.ImpostorBuffer, b.ImpostorCount, false));
 
+        if (b.Map != null) AddMapGeometry(node, b.Map);
+
         if (b.HasWater)
         {
             var water = new MeshInstance3D
@@ -226,6 +251,29 @@ public partial class ChunkStreamer : Node3D
             node.AddChild(water);
         }
         return node;
+    }
+
+    /// <summary>Roads and buildings of the real-map world for one chunk, with their collision.</summary>
+    private void AddMapGeometry(Node3D node, MapChunkGeometry geo)
+    {
+        if (!geo.Roads.Empty)
+            node.AddChild(new MeshInstance3D { Mesh = geo.Roads.ToMesh(_mapRoadMat!), CastShadow = GeometryInstance3D.ShadowCastingSetting.Off });
+        if (!geo.Buildings.Empty)
+            node.AddChild(new MeshInstance3D { Mesh = geo.Buildings.ToMesh(_buildingMat!) });
+        AddFaces(node, geo.PavedFaces, "asphalt", true);
+        AddFaces(node, geo.LooseFaces, "ground", false);
+        AddFaces(node, geo.BuildingFaces, "hard", true);
+    }
+
+    public static void AddFaces(Node3D node, List<Vector3>? faces, string surface, bool bothSides)
+    {
+        if (faces == null || faces.Count == 0) return;
+        var body = new StaticBody3D { CollisionLayer = 1, CollisionMask = 0 };
+        var shape = new ConcavePolygonShape3D { BackfaceCollision = bothSides };
+        shape.SetFaces(faces.ToArray());
+        body.AddChild(new CollisionShape3D { Shape = shape });
+        body.SetMeta("surface", surface);
+        node.AddChild(body);
     }
 
     private static MultiMeshInstance3D MakeMultiMesh(Mesh mesh, float[] buffer, int count, bool shadows)
@@ -507,19 +555,38 @@ public partial class ChunkStreamer : Node3D
         int count = (int)(GrassCell / spacing);
         var rng = new Rng(Hash.Of(_world.Seed, c.X, c.Y, 77));
         int flowerType = rng.Int(Math.Max(1, _veg.Flowers.Count));
+        MapContext? ctx = null;
+        if (_world.Map != null)
+        {
+            ctx = _grassContext ??= new MapContext(_world.Map);
+            ctx.Reset(x0, z0, 0, 0, GrassCell, GrassCell);
+        }
         for (int j = 0; j < count; j++)
         {
             for (int i = 0; i < count; i++)
             {
                 float x = x0 + (i + rng.F()) * spacing, z = z0 + (j + rng.F()) * spacing;
                 float roll = rng.F(), yaw = rng.Range(0, Mathf.Tau), sc = rng.Range(0.55f, 1.15f), shade = rng.Range(0.75f, 1.05f);
-                var rs = _world.Road.Sample(z);
-                var pois = _world.Pois.Near(z);
-                if (!_world.IsWild(x, z, rs, pois, 0.3f)) continue;
-                _world.Biome(x, z, out float forest, out float field);
-                float p = (1f - forest * 0.7f) * (1f - field) * Density;
-                if (roll > p) continue;
-                float h = _world.Compose(x, z, rs, pois, 0f, out float dirt);
+                float forest, field, h, dirt, p;
+                if (ctx != null)
+                {
+                    float lx = x - x0, lz = z - z0;
+                    if (!ctx.IsWild(lx, lz, 0.3f)) continue;
+                    ctx.Biome(lx, lz, out forest, out field);
+                    p = (1f - forest * 0.7f) * (1f - field) * Density;
+                    if (roll > p) continue;
+                    h = ctx.Height(lx, lz, 0f, out dirt);
+                }
+                else
+                {
+                    var rs = _world.Road.Sample(z);
+                    var pois = _world.Pois.Near(z);
+                    if (!_world.IsWild(x, z, rs, pois, 0.3f)) continue;
+                    _world.Biome(x, z, out forest, out field);
+                    p = (1f - forest * 0.7f) * (1f - field) * Density;
+                    if (roll > p) continue;
+                    h = _world.Compose(x, z, rs, pois, 0f, out dirt);
+                }
                 if (dirt > 0.3f || h < WorldGenerator.WaterLevel + 0.35f) continue;
                 var local = new Vector3(x - x0, h, z - z0);
                 var basis = new Basis(Vector3.Up, yaw).Scaled(new Vector3(sc, sc * rng.Range(0.8f, 1.4f), sc));
@@ -546,6 +613,8 @@ public partial class ChunkStreamer : Node3D
         if (_veg.Flowers.Count > 0) Add(flowers, _veg.Flowers[flowerType].Mesh);
         return node;
     }
+
+    private MapContext? _grassContext;
 
     public void ClearGrass()
     {

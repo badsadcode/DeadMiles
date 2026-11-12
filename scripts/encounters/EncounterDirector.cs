@@ -86,6 +86,12 @@ public partial class EncounterDirector : Node3D
             float x = pp.X + MathF.Cos(a) * d, z = pp.Z + MathF.Sin(a) * d;
             var rs = world.Road.Sample(z);
             if (!world.IsWild(x, z, rs, world.Pois.Near(z), 14f)) continue;
+            if (world.Map != null)
+            {
+                // real map: wildlife keeps to woods, fields and meadows
+                byte land = world.Map.LandAt(x, z);
+                if (land == MapLand.Residential || land == MapLand.Paved || land == MapLand.Farmyard || land == MapLand.Cemetery) continue;
+            }
             float h = world.Height(x, z);
             if (h < WorldGenerator.WaterLevel + 0.6f) continue;
             world.Biome(x, z, out float forest, out float field);
@@ -183,9 +189,18 @@ public partial class EncounterDirector : Node3D
         var world = _g.World;
         float dir = _g.Player.InVehicle ? MathF.Sign(-_g.Vehicle.GlobalTransform.Basis.Z.Z) : (_rng.Randf() < 0.5f ? 1f : -1f);
         if (dir == 0) dir = 1;
-        float z = pp.Z + dir * _rng.RandfRange(170f, 230f);
-        if (Math.Abs(PoiPlacer.SegmentOf(z)) <= 1) return;
-        var pos = world.Road.PointAt(z, _rng.Randf() < 0.5f ? 4.6f : -4.6f);
+        Vector3 pos;
+        if (world.Map != null)
+        {
+            var rng = new Rng(_rng.Randi());
+            if (!world.Map.RandomRoadside(pp.X, pp.Z, 170f, 230f, ref rng, out pos)) return;
+        }
+        else
+        {
+            float z = pp.Z + dir * _rng.RandfRange(170f, 230f);
+            if (Math.Abs(PoiPlacer.SegmentOf(z)) <= 1) return;
+            pos = world.Road.PointAt(z, _rng.Randf() < 0.5f ? 4.6f : -4.6f);
+        }
         pos.Y = world.Height(pos.X, pos.Z) + 0.1f;
         float r = _rng.Randf();
         var attitude = r < 0.5f ? Disposition.Friendly : r < 0.85f ? Disposition.Wary : Disposition.Hostile;

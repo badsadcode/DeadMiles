@@ -56,6 +56,14 @@ public partial class Main : Node
 		Swap(new GameWorld { Name = "Game", State = new SaveData { Seed = seed, TimeOfDay = 13.5f }, IsNewGame = true });
 	}
 
+	/// <summary>New game on a real map (see tools/osm_import), starting near the given world position.</summary>
+	public void StartNewMapGame(string map, float startX, float startZ)
+	{
+		GetTree().Paused = false;
+		var state = new SaveData { Seed = MapWorld.TerrainSeed, Map = map, MapStart = new[] { startX, startZ }, TimeOfDay = 13.5f };
+		Swap(new GameWorld { Name = "Game", State = state, IsNewGame = true });
+	}
+
 	public void ContinueGame()
 	{
 		GetTree().Paused = false;

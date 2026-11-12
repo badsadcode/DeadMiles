@@ -50,6 +50,7 @@ public sealed class PoiPlacer
     /// <summary>Every POI that can influence terrain at this Z (own segment and both neighbours).</summary>
     public PoiDesc[] Near(float z)
     {
+        if (_world.Map != null) return Empty;   // a real map brings its own places
         int k = SegmentOf(z);
         return _near.GetOrAdd(k, kk =>
         {
@@ -59,7 +60,7 @@ public sealed class PoiPlacer
         });
     }
 
-    public PoiDesc[] ForSegment(int k) => _segments.GetOrAdd(k, Generate);
+    public PoiDesc[] ForSegment(int k) => _world.Map != null ? Empty : _segments.GetOrAdd(k, Generate);
 
     private PoiKind Roll(int k, ref Rng rng)
     {

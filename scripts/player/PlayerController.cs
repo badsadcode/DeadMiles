@@ -284,7 +284,10 @@ public partial class PlayerController : CharacterBody3D, IDamageable
             if (s == "asphalt") return "step_gravel";
             if (s == "hard") return "step_hard";
         }
-        float lat = MathF.Abs(GameWorld.I.World.Road.LateralDistance(GlobalPosition.X, GlobalPosition.Z));
+        var world = GameWorld.I.World;
+        if (world.Map != null)
+            return world.Map.RoadEdgeDistance(GlobalPosition.X, GlobalPosition.Z, 8f) < 1.5f ? "step_gravel" : "step_grass";
+        float lat = MathF.Abs(world.Road.LateralDistance(GlobalPosition.X, GlobalPosition.Z));
         return lat < 7f ? "step_gravel" : "step_grass";
     }
 

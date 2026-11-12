@@ -20,6 +20,8 @@ public sealed class ChunkBuild
     public float[]? ImpostorBuffer;
     public int ImpostorCount;
     public List<Vector4>? Trunks; // xyz local position, w radius
+    /// <summary>Roads and buildings of the real-map world; null in the procedural world.</summary>
+    public MapChunkGeometry? Map;
 }
 
 /// <summary>Worker-side terrain and vegetation generation. No scene tree access in here.</summary>
@@ -37,6 +39,16 @@ public static class ChunkBuilder
         float x0 = coord.X * ChunkSize, z0 = coord.Y * ChunkSize;
         float depress = 0.3f + 0.15f * (s - 2f);
 
+        // Real-map world: gather the roads and buildings around this chunk once, in chunk-local
+        // coordinates, and let that context answer every height / biome / occupancy question.
+        MapContext? ctx = null;
+        if (world.Map != null)
+        {
+            ctx = _mapContext;
+            if (ctx == null || ctx.World != world.Map) _mapContext = ctx = new MapContext(world.Map);
+            ctx.Reset(coord.X * (double)ChunkSize, coord.Y * (double)ChunkSize, -s, -s, ChunkSize + s, ChunkSize + s);
+        }
+
         // Heights with a one-cell border so normals match across chunk seams.
         int gw = n + 3;
         var hgt = new float[gw * gw];
@@ -45,12 +57,13 @@ public static class ChunkBuilder
         for (int j = 0; j < gw; j++)
         {
             float z = z0 + (j - 1) * s;
-            var rs = world.Road.Sample(z);
+            var rs = ctx == null ? world.Road.Sample(z) : default;
             var pois = world.Pois.Near(z);
             for (int i = 0; i < gw; i++)
             {
                 float x = x0 + (i - 1) * s;
-                float h = world.Compose(x, z, rs, pois, depress, out float d);
+                float d;
+                float h = ctx != null ? ctx.Height((i - 1) * s, (j - 1) * s, depress, out d) : world.Compose(x, z, rs, pois, depress, out d);
                 hgt[j * gw + i] = h;
                 dirt[j * gw + i] = d;
                 if (h < minH) minH = h;
@@ -72,7 +85,9 @@ public static class ChunkBuilder
                 int v = j * vw + i;
                 verts[v] = new Vector3(i * s, h, j * s);
                 normals[v] = new Vector3(hgt[g - 1] - hgt[g + 1], 2f * s, hgt[g - gw] - hgt[g + gw]).Normalized();
-                world.Biome(x0 + i * s, z0 + j * s, out float forest, out float field);
+                float forest, field;
+                if (ctx != null) ctx.Biome(i * s, j * s, out forest, out field);
+                else world.Biome(x0 + i * s, z0 + j * s, out forest, out field);
                 colors[v] = new Color(forest, field, dirt[g], 1f);
             }
         }
@@ -135,11 +150,18 @@ public static class ChunkBuilder
             build.Trunks = new List<Vector4>();
         }
 
-        PlaceVegetation(world, vegLocals, build, x0, z0, lod, density);
+        PlaceVegetation(world, ctx, vegLocals, build, x0, z0, lod, density);
+        if (ctx != null)
+        {
+            build.Map = new MapChunkGeometry();
+            MapMesher.Build(ctx, ChunkSize, lod, build.Map, lod == 0);
+        }
         return build;
     }
 
-    private static void PlaceVegetation(WorldGenerator world, Transform3D[] locals, ChunkBuild build, float x0, float z0, int lod, float density)
+    [ThreadStatic] private static MapContext? _mapContext;
+
+    private static void PlaceVegetation(WorldGenerator world, MapContext? ctx, Transform3D[] locals, ChunkBuild build, float x0, float z0, int lod, float density)
     {
         var lists = new List<float>?[VegetationLibrary.Count];
         List<float>? impostor = null;
@@ -160,15 +182,30 @@ public static class ChunkBuilder
                 float yaw = rng.Range(0f, Mathf.Tau);
                 float tintR = rng.Range(0.82f, 1.08f), tintG = rng.Range(0.85f, 1.1f);
 
-                var rs = world.Road.Sample(z);
-                var pois = world.Pois.Near(z);
-                if (!world.IsWild(x, z, rs, pois, 2.2f)) continue;
-                world.Biome(x, z, out float forest, out float field);
-                float lateral = MathF.Abs(x - rs.X) * rs.InvLen;
-                float verge = lateral < 30f ? 0.22f * (1f - field) : 0f;
-                float p = forest * 0.85f + (1f - forest) * (1f - field) * 0.05f + verge;
-                if (roll > p * density) continue;
-                float h = world.Compose(x, z, rs, pois, 0f, out _);
+                float forest, field, h, verge;
+                if (ctx != null)
+                {
+                    float lx = x - x0, lz = z - z0;
+                    if (!ctx.IsWild(lx, lz, 2.2f)) continue;
+                    ctx.Biome(lx, lz, out forest, out field);
+                    verge = 0f;
+                    float pm = forest * 0.85f + (1f - forest) * (1f - field) * 0.02f;
+                    if (roll > pm * density) continue;
+                    h = ctx.Height(lx, lz, 0f, out float bare);
+                    if (bare > 0.5f) continue;   // paved yards, sand
+                }
+                else
+                {
+                    var rs = world.Road.Sample(z);
+                    var pois = world.Pois.Near(z);
+                    if (!world.IsWild(x, z, rs, pois, 2.2f)) continue;
+                    world.Biome(x, z, out forest, out field);
+                    float lateral = MathF.Abs(x - rs.X) * rs.InvLen;
+                    verge = lateral < 30f ? 0.22f * (1f - field) : 0f;
+                    float p = forest * 0.85f + (1f - forest) * (1f - field) * 0.05f + verge;
+                    if (roll > p * density) continue;
+                    h = world.Compose(x, z, rs, pois, 0f, out _);
+                }
                 if (h < WorldGenerator.WaterLevel + 0.45f) continue;
 
                 float variety = world.Variety(x, z);

@@ -779,4 +779,82 @@ public sealed class PoiBuilder
             }
         }
     }
+    // ---- real-map places -----------------------------------------------------------------
+
+    private Kit MapKit(string id, Vector3 pos, float yaw, out Node3D root)
+    {
+        var desc = new PoiDesc { Id = id, Center = pos, Yaw = yaw, Seed = Hash.OfString(id) };
+        root = new Node3D { Name = id, Transform = desc.Transform };
+        var body = new StaticBody3D { CollisionLayer = 1, CollisionMask = 0 };
+        body.SetMeta("surface", "hard");
+        root.AddChild(body);
+        return new Kit { Root = root, Body = body, Poi = desc, Rng = new Rng(desc.Seed), World = _world };
+    }
+
+    /// <summary>
+    /// What a real shop, fuel station, clinic... turns into: pumps and supply crates set outside
+    /// the building (interiors are not modelled), under a sign with the place's real name.
+    /// Local +Z faces the street.
+    /// </summary>
+    public Node3D BuildMapPoi(MapPoi p, Vector3 pos, float yaw)
+    {
+        var k = MapKit(p.Id, pos, yaw, out var root);
+        string fallback = p.Kind switch
+        {
+            MapPoiKind.Fuel => "FUEL", MapPoiKind.Food => "GROCERY", MapPoiKind.Medical => "PHARMACY",
+            MapPoiKind.Diner => "DINER", MapPoiKind.Garage => "GARAGE", MapPoiKind.Police => "POLICE",
+            MapPoiKind.Hardware => "HARDWARE", MapPoiKind.Camp => "CAMPING", _ => "SHOP",
+        };
+        string name = p.Name.Length > 0 ? p.Name : fallback;
+        string label = name.Length > 26 ? name[..26] : name;
+        var crate = new Vector3(0.95f, 0.7f, 0.65f);
+        Vector3 At(float x, float z) => k.Ground(x, z, 0.35f);
+        switch (p.Kind)
+        {
+            case MapPoiKind.Fuel:
+                FuelPump(k, k.Ground(-1.5f, 0.6f), 0);
+                FuelPump(k, k.Ground(1.5f, 0.6f), 1);
+                k.Container(At(3.4f, -0.4f), crate, Wood, name, "garage");
+                label = p.Name.Length > 0 ? label : "FUEL";
+                break;
+            case MapPoiKind.Food:
+                k.Container(At(-0.6f, 0f), crate, PaleWood, name, "shop");
+                k.Container(At(0.6f, 0f), crate, Wood, name + " (stockroom)", "kitchen");
+                break;
+            case MapPoiKind.Medical:
+                k.Container(At(0f, 0f), crate, White, name, "medical");
+                break;
+            case MapPoiKind.Diner:
+                k.Container(At(-0.6f, 0f), crate, Wood, name, "kitchen");
+                k.Container(At(0.6f, 0f), new Vector3(0.7f, 0.9f, 0.7f), Metal, name + " (cooler)", "fridge");
+                break;
+            case MapPoiKind.Garage:
+                k.Container(At(0f, 0f), new Vector3(1.2f, 0.8f, 0.6f), Metal, name, "garage");
+                TireStack(k, k.Ground(1.4f, 0.2f), 3);
+                break;
+            case MapPoiKind.Police:
+                k.Container(At(0f, 0f), new Vector3(1.1f, 0.7f, 0.6f), Olive, name, "military");
+                break;
+            case MapPoiKind.Hardware:
+                k.Container(At(0f, 0f), crate, DarkWood, name, "barn");
+                break;
+            case MapPoiKind.Camp:
+                k.Container(At(0f, 0f), crate, Olive, name, "camp");
+                Campfire(k, k.Ground(1.8f, 1.2f));
+                break;
+            default:
+                k.Container(At(0f, 0f), crate, Wood, name, k.Rng.Chance(0.5f) ? "shop" : "bedroom");
+                break;
+        }
+        root.AddChild(MakeSign(label.ToUpperInvariant(), k.Ground(-2.2f, -0.2f), 0f, false));
+        return root;
+    }
+
+    /// <summary>An abandoned car beside (or on) a real road.</summary>
+    public Node3D BuildMapWreck(string id, Vector3 pos, float yaw)
+    {
+        var k = MapKit(id, pos, yaw, out var root);
+        WreckCar(k, Vector3.Zero, 0f);
+        return root;
+    }
 }

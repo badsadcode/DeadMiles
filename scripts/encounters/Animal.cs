@@ -223,6 +223,7 @@ public partial class Animal : AnimatableBody3D, IDamageable, IInteractable
             var probe = pos + fwd * 4f;
             var rs = world.Road.Sample(probe.Z);
             bool blocked = world.Height(probe.X, probe.Z) < WorldGenerator.WaterLevel + 0.2f;
+            if (world.Map != null && world.Map.InBuilding(probe.X, probe.Z, 1f)) blocked = true;
             foreach (var p in world.Pois.Near(probe.Z))
             {
                 if (p.Radius <= 0) continue;

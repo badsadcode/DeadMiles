@@ -46,7 +46,10 @@ public partial class GameWorld : Node3D
         ProcessMode = ProcessModeEnum.Pausable;
         Log.Info("GameWorld", IsNewGame ? $"New game, seed {State.Seed}" : $"Continuing seed {State.Seed}, day {State.Day}");
 
-        World = new WorldGenerator(State.Seed);
+        MapWorld? map = State.Map.Length > 0 ? MapWorld.TryOpen(State.Map) : null;
+        if (State.Map.Length > 0 && map == null)
+            Log.Error("GameWorld", $"This save needs the map '{State.Map}', which is missing. Falling back to the generated road.");
+        World = new WorldGenerator(State.Seed, map);
         var veg = new VegetationLibrary();
         Streamer = new ChunkStreamer { Name = "World" };
         AddChild(Streamer);
@@ -96,8 +99,48 @@ public partial class GameWorld : Node3D
         GetTree().Paused = false;
     }
 
+    /// <summary>Real-map start: the car is parked on the nearest quiet road, the player stands beside it.</summary>
+    private void PlaceNewGameOnMap(MapWorld map)
+    {
+        float sx = State.MapStart[0], sz = State.MapStart[1];
+        Vector3 road = new(sx, map.Height(sx, sz), sz);
+        float yaw = 0f;
+        bool found = false;
+        foreach (var (radius, cls) in new[] { (150f, RoadClass.Residential), (500f, RoadClass.Residential), (1400f, RoadClass.Track) })
+        {
+            if (!map.NearestRoad(sx, sz, radius, 1.4f, out var p, out float y, cls)) continue;
+            road = p; yaw = y; found = true;
+            break;
+        }
+        if (!found) Log.Warn("GameWorld", $"No road within reach of the start point ({sx:0}, {sz:0}); starting in the open");
+        Vehicle.GlobalTransform = new Transform3D(new Basis(Vector3.Up, yaw), road + Vector3.Up * 0.45f);
+        var right = new Vector3(MathF.Cos(yaw), 0, -MathF.Sin(yaw));
+        var pp = road + right * 2.4f;
+        for (int i = 0; i < 6 && map.InBuilding(pp.X, pp.Z, 0.5f); i++) pp -= right * 0.8f;
+        pp.Y = map.Height(pp.X, pp.Z) + 0.15f;
+        Player.GlobalPosition = pp;
+        Player.Yaw = yaw + Mathf.Pi * 0.5f;   // facing the car
+
+        Player.Inventory.Add("water", 1);
+        Player.Inventory.Add("chocolate", 1);
+        foreach (var item in new[] { "crowbar", "fuel_can", "beans", "bandage", "empty_bottle", "water", "beans" })
+            Vehicle.Trunk.Add(item, 1);
+        Vehicle.Fuel = State.Fuel;
+        Vehicle.EngineHealth = State.EngineHealth;
+        Vehicle.TireHealth = State.TireHealth;
+        Time.TimeOfDay = State.TimeOfDay;
+        Time.Day = State.Day;
+        Weather.Restore((int)WeatherState.Clear, 260f, 0f);
+
+        var place = map.NearestPlace(pp.X, pp.Z, 6000f);
+        _intro.Enqueue((2.5, place != null ? $"{place.Name}. Your supplies are in the trunk." : "Your supplies are in the trunk."));
+        _intro.Enqueue((10, $"[{InputSetup.KeyName("interact")}] to get in the car. The trunk is at the back."));
+        _intro.Enqueue((26, "Fuel is low. Fuel stations and shops are where the map says they are."));
+    }
+
     private void PlaceNewGame()
     {
+        if (World.Map != null) { PlaceNewGameOnMap(World.Map); return; }
         var poi = World.Pois.ForSegment(0)[0];
         var carPos = poi.ToWorld(new Vector3(8.5f, 0, -7.5f));
         carPos.Y = World.Height(carPos.X, carPos.Z) + 0.45f;
@@ -197,12 +240,41 @@ public partial class GameWorld : Node3D
         audio.Sheltered = _sheltered;
         audio.ListenerPos = Player.GlobalPosition;
 
+        if (World.Map != null && (_placeTimer -= delta) <= 0)
+        {
+            _placeTimer = 2.0;
+            AnnouncePlace(World.Map);
+        }
+
         _autosave -= delta;
         if (_autosave <= 0)
         {
             _autosave = 180;
             SaveGame(false);
         }
+    }
+
+    private double _placeTimer = 6;
+    private string _lastPlace = "";
+
+    /// <summary>A quiet line on screen when the player reaches a named town or village.</summary>
+    private void AnnouncePlace(MapWorld map)
+    {
+        var pos = Player.GlobalPosition;
+        MapPlace? here = null;
+        float best = float.MaxValue;
+        foreach (var p in map.Data.Places)
+        {
+            float reach = p.Rank == 0 ? 6500f : p.Rank == 1 ? 2200f : 700f;
+            float d = new Vector2(p.X - pos.X, p.Z - pos.Z).Length();
+            if (d > reach) continue;
+            float score = d / reach + p.Rank * 0.01f;
+            if (score < best) { best = score; here = p; }
+        }
+        string name = here?.Name ?? "";
+        if (name == _lastPlace) return;
+        _lastPlace = name;
+        if (name.Length > 0 && _loadTime > 8) Toast(name);
     }
 
     public override void _UnhandledInput(InputEvent e)

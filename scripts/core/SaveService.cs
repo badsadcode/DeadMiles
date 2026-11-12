@@ -13,6 +13,10 @@ public sealed class SaveData
 {
     public int Version { get; set; } = 1;
     public int Seed { get; set; }
+    /// <summary>Name of the real map this run plays on ("mazowsze"), or empty for the generated road.</summary>
+    public string Map { get; set; } = "";
+    /// <summary>Where a new game on a real map starts (world X, Z).</summary>
+    public float[] MapStart { get; set; } = { 0, 0 };
     public double PlayTime { get; set; }
     public int Day { get; set; } = 1;
     public float TimeOfDay { get; set; } = 8.5f;

@@ -17,6 +17,9 @@ public partial class DebugHarness : Node
     private string _shotDir = "user://shots";
     private int _seed = 1234;
     private int _shotIndex;
+    private string _map = "";
+    private string _place = "";
+    private float _startX, _startZ;
 
     public static DebugHarness? TryCreate()
     {
@@ -30,6 +33,21 @@ public partial class DebugHarness : Node
         }
         if (tests == null) return null;
         var h = new DebugHarness { Name = "DebugHarness", _tests = tests.Split(',', StringSplitOptions.RemoveEmptyEntries), _seed = seed };
+        // real-map runs:  --map=mazowsze  and either --place=Radom or --start=x,z (world metres)
+        foreach (var arg in OS.GetCmdlineUserArgs())
+        {
+            if (arg.StartsWith("--map=")) h._map = arg["--map=".Length..];
+            else if (arg.StartsWith("--place=")) h._place = arg["--place=".Length..];
+            else if (arg.StartsWith("--start="))
+            {
+                var parts = arg["--start=".Length..].Split(',');
+                if (parts.Length == 2)
+                {
+                    float.TryParse(parts[0], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out h._startX);
+                    float.TryParse(parts[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out h._startZ);
+                }
+            }
+        }
         if (shots != null) h._shotDir = shots;
         return h;
     }
@@ -97,6 +115,9 @@ public partial class DebugHarness : Node
                     case "save": await TestSave(); break;
                     case "loop": await TestLoop(); break;
                     case "looks": await TestLooks(); break;
+                    case "mapstart": await TestMapStart(); break;
+                    case "mapair": await TestMapAir(); break;
+                    case "mapdrive": await TestMapDrive(); break;
                     default: Report($"ERROR: unknown test '{test}'"); break;
                 }
             }
@@ -112,9 +133,113 @@ public partial class DebugHarness : Node
     private async Task EnsureGame()
     {
         if (GameWorld.I != null && GameWorld.I.IsReady) return;
-        Main.I.StartNewGame(_seed);
+        if (_map.Length > 0)
+        {
+            if (_place.Length > 0)
+            {
+                var p = MapData.ReadPlaces(_map).Find(q => q.Name == _place);
+                if (p == null) Report($"ERROR: place '{_place}' is not on the map");
+                else { _startX = p.X; _startZ = p.Z; }
+            }
+            Main.I.StartNewMapGame(_map, _startX, _startZ);
+        }
+        else Main.I.StartNewGame(_seed);
         await WaitReady();
         await Wait(2.0);
+    }
+
+    // ---- real-map scenarios -----------------------------------------------------------------
+
+    private async Task TestMapStart()
+    {
+        await EnsureGame();
+        var g = GameWorld.I;
+        g.Weather.Force(WeatherState.Clear, true);
+        g.Time.TimeOfDay = 11f;
+        Report($"map start: player {g.Player.GlobalPosition}, car {g.Vehicle.GlobalPosition}, chunks {g.Streamer.LoadedChunks}");
+        await Wait(6);
+        float yaw = g.Player.Yaw;
+        for (int i = 0; i < 4; i++)
+        {
+            g.Player.SetLook(yaw + i * Mathf.Pi * 0.5f, -0.04f);
+            await Wait(1.0);
+            await Shot($"map_look{i}");
+        }
+        var p = g.Player.GlobalPosition;
+        Report($"after settle: player y={p.Y:0.00} ground={g.World.Height(p.X, p.Z):0.00}; car up={g.Vehicle.GlobalTransform.Basis.Y.Y:0.00} y={g.Vehicle.GlobalPosition.Y:0.00} ground={g.World.Height(g.Vehicle.GlobalPosition.X, g.Vehicle.GlobalPosition.Z):0.00}");
+    }
+
+    /// <summary>Lifts the camera above the start point and looks down, to judge layout at a glance.</summary>
+    private async Task TestMapAir()
+    {
+        await EnsureGame();
+        var g = GameWorld.I;
+        g.Weather.Force(WeatherState.Clear, true);
+        g.Time.TimeOfDay = 11.5f;
+        if (g.Player.InVehicle) g.Player.ExitVehicle();
+        g.Player.SetPhysicsProcess(false);
+        var home = g.Player.GlobalPosition;
+        await Wait(8);
+        foreach (var (height, pitch, name) in new[] { (70f, -0.75f, "low"), (190f, -1.1f, "mid"), (420f, -1.45f, "high") })
+        {
+            for (int i = 0; i < 2; i++)
+            {
+                g.Player.GlobalPosition = new Vector3(home.X, g.World.Height(home.X, home.Z) + height, home.Z);
+                g.Player.SetLook(i * Mathf.Pi * 0.5f, pitch);
+                await Wait(1.5);
+                await Shot($"map_air_{name}{i}");
+            }
+        }
+        g.Player.GlobalPosition = home;
+        g.Player.SetPhysicsProcess(true);
+    }
+
+    private async Task TestMapDrive()
+    {
+        await EnsureGame();
+        var g = GameWorld.I;
+        var map = g.World.Map;
+        if (map == null) { Report("ERROR: mapdrive needs --map"); return; }
+        g.Weather.Force(WeatherState.Clear, true);
+        if (!g.Player.InVehicle) g.Player.EnterVehicle(g.Vehicle);
+        g.Vehicle.Fuel = 40;
+        g.Vehicle.ForceEngine(true);
+        float cruise = 9f;
+        g.Autopilot = (VehicleController v, ref float throttle, ref float brake, ref float steer) =>
+        {
+            var pos = v.GlobalPosition;
+            var fwd = -v.GlobalTransform.Basis.Z;
+            float look = 8f + MathF.Abs(v.Speed) * 0.6f;
+            var probe = pos + fwd * look;
+            float angle = 0f;
+            if (map.NearestRoad(probe.X, probe.Z, 40f, 1.2f, out var target, out _))
+            {
+                var local = v.GlobalTransform.AffineInverse() * target;
+                angle = MathF.Atan2(local.X, -local.Z);
+            }
+            steer = Mathf.Clamp(-angle * 2.0f, -1f, 1f);
+            throttle = v.Speed < cruise ? 0.8f : 0f;
+            brake = v.Speed > cruise + 3f ? 0.5f : 0f;
+        };
+        var startPos = g.Vehicle.GlobalPosition;
+        float minUp = 1f;
+        int offRoad = 0;
+        for (int i = 0; i < 14; i++)
+        {
+            await Wait(2.5);
+            var p = g.Vehicle.GlobalPosition;
+            float edge = map.RoadEdgeDistance(p.X, p.Z, 40f);
+            float up = g.Vehicle.GlobalTransform.Basis.Y.Y;
+            minUp = MathF.Min(minUp, up);
+            if (!g.Vehicle.OnRoad) offRoad++;
+            Report($"t={i * 2.5f:0.0}s pos=({p.X:0.0},{p.Z:0.0}) y={p.Y:0.00} ground={g.World.Height(p.X, p.Z):0.00} speed={g.Vehicle.Speed * 3.6f:0} km/h roadEdge={edge:0.0} onRoad={g.Vehicle.OnRoad} up={up:0.00} fps={Engine.GetFramesPerSecond():0} chunks={g.Streamer.LoadedChunks} jobs={g.Streamer.PendingJobs}");
+            if (i == 5 || i == 11) await Shot($"map_drive{i}");
+        }
+        g.Autopilot = null;
+        float travelled = g.Vehicle.GlobalPosition.DistanceTo(startPos);
+        Report($"map drive: travelled {travelled:0} m, min up {minUp:0.00}, off-road samples {offRoad}/14");
+        if (travelled < 60f) Report("ERROR: the car barely moved");
+        if (minUp < 0.5f) Report("ERROR: the car rolled over");
     }
 
     private async Task TestMenu()
